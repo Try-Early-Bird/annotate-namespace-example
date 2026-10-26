@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@expo/metro-runtime": "~57.0.9",
-    "@joinearlybird/annotate-react-native": "^0.1.0",
+    "@joinearlybird/annotate-react-native": "^0.1.1",
     "@novnc/novnc": "^1.7.0",
     "expo": "57.0.8",
     "expo-constants": "~57.0.10",
