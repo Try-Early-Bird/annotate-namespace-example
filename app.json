@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "Annotate Sandbox",
+    "slug": "annotate-namespace-example",
+    "version": "1.0.0",
+    "scheme": "annotate-sandbox",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": { "supportsTablet": true, "bundleIdentifier": "com.example.annotatesandbox" },
+    "android": { "package": "com.example.annotatesandbox" },
+    "web": { "bundler": "metro", "output": "single" },
+    "plugins": ["expo-router"]
+  }
+}

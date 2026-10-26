@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Simulator</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  /* The window onto the desktop. noVNC's canvas is the WHOLE desktop and is
+     moved and scaled underneath so that only the device screen shows. */
+  #screen { width: 100%; height: 100%; position: relative; overflow: hidden; }
+  #screen canvas {
+    display: block;
+    position: absolute; left: 0; top: 0;
+    transform-origin: top left;
+  }
+  .msg {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    gap: 10px; align-items: center; justify-content: center; text-align: center;
+    padding: 28px; color: #94a3b8; background: #0b1120;
+    font: 13px/1.6 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+  .msg strong { color: #e2e8f0; font-size: 15px; }
+  .msg code {
+    background: #111827; border: 1px solid #1f2937; border-radius: 6px;
+    padding: 2px 6px; font-size: 12px; color: #e2e8f0;
+  }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="screen"></div>
+<div class="msg hidden" id="msg"><strong id="msgTitle"></strong><div id="msgBody"></div></div>
+
+<script type="module">
+  // ABSOLUTE, because this page is served at BOTH /vnc and /vnc/ and a
+  // relative specifier resolves differently for each: from /vnc it would
+  // ask for /core/rfb.js, which falls through to Metro and comes back as
+  // HTML — "Expected a JavaScript-or-Wasm module script".
+  import RFB from "/vnc/core/rfb.js";
+
+  const screen = document.getElementById("screen");
+  const msg = document.getElementById("msg");
+  const msgTitle = document.getElementById("msgTitle");
+  const msgBody = document.getElementById("msgBody");
+
+  function fail(title, body) {
+    msgTitle.textContent = title;
+    msgBody.innerHTML = body;
+    msg.classList.remove("hidden");
+    screen.classList.add("hidden");
+  }
+
+  // Same origin, so the ws:// scheme has to track the page's. A devbox is
+  // https, so this must be wss there or the browser blocks it as mixed
+  // content — and the failure would look like "the screen never connects"
+  // rather than anything about schemes.
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const url = `${proto}://${location.host}/websockify`;
+
+  // Screen Sharing usually wants a password. The server passes it through
+  // only when VNC_PASSWORD is set; with no password noVNC will prompt, and
+  // a prompt inside a small iframe is unusable, so we say what to set.
+  const query = new URLSearchParams(location.search);
+  const password = query.get("password") || undefined;
+  const username = query.get("username") || undefined;
+
+  let rfb;
+  try {
+    rfb = new RFB(screen, url, { credentials: password ? { username, password } : undefined });
+  } catch (err) {
+    fail("Could not start the viewer", String(err && err.message ? err.message : err));
+    throw err;
+  }
+
+  // With a password but no username, the password is a legacy VNC one.
+  // Screen Sharing lists Apple's auth (type 30) BEFORE the VNC password
+  // (type 2) even when both are on, and noVNC takes the first type it
+  // supports — so it would pick Apple's, ask for a username we do not have,
+  // and sit there. Declining type 30 makes it fall through to type 2.
+  // Private API, like `_display` below; noVNC has no public way to choose.
+  if (password && !username) {
+    const supported = rfb._isSupportedSecurityType.bind(rfb);
+    rfb._isSupportedSecurityType = (type) => type !== 30 && supported(type);
+  }
+
+  // NO noVNC scaling. VNC streams the whole desktop, and letting noVNC fit
+  // that into a phone frame would show a desktop with a phone somewhere in
+  // it. We crop instead — see applyCrop — and that has to happen at scale
+  // 1, because noVNC maps pointer events through its own scale factor and a
+  // second one would land every click in the wrong place.
+  rfb.scaleViewport = false;
+  rfb.resizeSession = false;
+  rfb.clipViewport = false;
+  rfb.focusOnClick = true;
+
+  /**
+   * Show only the device screen.
+   *
+   * The scaling is noVNC's, NOT ours, and that is the whole trick. noVNC
+   * maps a click with `absX(x) = x / scale + viewportLoc.x`, feeding it
+   * `offsetX` — and Chrome reports `offsetX` in VISUAL space, so a CSS
+   * `scale()` on the canvas silently multiplies every coordinate by it.
+   * Scaling in CSS put clicks out by exactly the scale factor (a tap at
+   * desktop 864,640 arrived as 924,684).
+   *
+   * Handing the factor to `display.scale` instead makes the same number
+   * cancel: offsetX comes back as (rect.x + devX) * scale, absX divides by
+   * scale, and the server is told rect.x + devX. So CSS is left with the
+   * one thing noVNC has no opinion about — moving the crop's corner to the
+   * origin, in already-scaled pixels.
+   *
+   * `_display` is private, but clipping and scaling cannot be combined
+   * through the public API: setting `scaleViewport` explicitly disables
+   * clipping ("Scaling trumps clipping"), and `clipViewport` alone pins the
+   * viewport to the container at scale 1.
+   */
+  function applyCrop(rect) {
+    const canvas = screen.querySelector("canvas");
+    const display = rfb._display;
+    if (!canvas || !display) return;
+    const box = screen.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+
+    if (!rect) {
+      // Unknown: fit the whole desktop rather than guess at a crop.
+      display.scale = Math.min(box.width / canvas.width, box.height / canvas.height);
+      canvas.style.transform = "";
+      return;
+    }
+    // The rect is in desktop POINTS; the framebuffer may be in pixels (see
+    // sim-window.mjs). A pinned SCREEN_RECT has no `desktop` and is taken
+    // as framebuffer pixels already.
+    const k = rect.desktop ? canvas.width / rect.desktop.width : 1;
+    const x = rect.x * k, y = rect.y * k, w = rect.width * k, h = rect.height * k;
+    shape(w, h);
+    const s = Math.min(box.width / w, box.height / h);
+    display.scale = s;
+    const dx = (box.width - w * s) / 2;
+    canvas.style.transform = `translate(${dx - x * s}px, ${-y * s}px)`;
+  }
+
+  /**
+   * Tell the panel the crop's shape, so it can size the phone to the device
+   * actually running — an iPad or an iPhone SE is not a 17 Pro, and a fixed
+   * frame letterboxes them. Only on change; this runs every poll.
+   */
+  let lastShape = "";
+  function shape(width, height) {
+    const key = `${Math.round(width)}x${Math.round(height)}`;
+    if (key === lastShape) return;
+    lastShape = key;
+    parent.postMessage({ type: "vnc", state: "shape", width, height }, location.origin);
+  }
+
+  /**
+   * Is the screen we are SHOWN at the lock screen (or the login window)?
+   *
+   * Judged from the pixels, not asked of the Mac: on a devbox the Mac's own
+   * lock flag read "locked" while this very stream showed a signed-in
+   * desktop. A signed-in desktop has a light menu bar across the top; the
+   * lock screen has wallpaper there. So: average brightness of a strip
+   * through the menu bar, left side only (the lock screen prints "Your
+   * screen is being observed" at the top right).
+   */
+  function looksLocked() {
+    const canvas = screen.querySelector("canvas");
+    if (!canvas || !canvas.width || !canvas.height) return false;
+    const y = Math.round(canvas.height * 0.014); // the middle of a 24pt bar on 800pt
+    const { data } = canvas.getContext("2d").getImageData(0, y, Math.round(canvas.width * 0.4), 1);
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 4) sum += 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+    return sum / (data.length / 4) < 150;
+  }
+
+  /**
+   * While locked, frame a phone-shaped column down the middle of the
+   * desktop at full height — the clock at the top, the account and the
+   * password field at the bottom — instead of the Simulator, which the lock
+   * screen is drawn over. In framebuffer pixels, so no `desktop`.
+   */
+  function lockColumn() {
+    const h = rfb._fbHeight, w = Math.round((h * 402) / 874); // an iPhone's shape
+    return { x: Math.round((rfb._fbWidth - w) / 2), y: 0, width: w, height: h };
+  }
+
+  /**
+   * Sign in at a locked screen by doing what a person would: click the
+   * account's picture, clear the field, then type the password and press
+   * Return — unhurried, since the field animates in and a waking display
+   * drops early keys. The picture sits centred, about 80% of the way down
+   * on a devbox's lock screen (macOS 26); clicking the empty space below it
+   * opens nothing, and the first digit then only opened the field, so the
+   * password went in one short. Opt-in from
+   * the server (`unlock=1`), because it is only right when the VNC password
+   * is also the login password.
+   *
+   * Only after the screen has looked locked on two polls running, so one
+   * odd frame cannot send the password to a signed-in desktop. Raw pointer
+   * messages in FRAMEBUFFER pixels, not noVNC's _sendMouse, which maps
+   * through the crop's display scale. Throttled: a wrong password must not
+   * turn into a stream of failed logins.
+   */
+  const autoUnlock = query.get("unlock") === "1" && !!password;
+  let lastUnlock = 0;
+  let lockedPolls = 0;
+  /** Tell the panel how a sign-in is going, so a failure says where. */
+  const said = (step) => parent.postMessage({ type: "vnc", state: "signin", step }, location.origin);
+
+  async function unlock({ asked = false } = {}) {
+    if (asked) {
+      // Someone pressed Sign in: do it now, whatever the timers say.
+      if (!password) return said("no password to type: start the sandbox with VNC_PASSWORD");
+      if (!connected) return said("the screen is not connected");
+    } else {
+      if (!autoUnlock || lockedPolls < 2 || Date.now() - lastUnlock < 20000) return;
+      // One tab types; the others would garble it. The server decides which.
+      const turn = await fetch("/sandbox/unlock", { method: "POST" }).then((r) => r.json()).catch(() => ({ ok: true }));
+      if (!turn.ok) return;
+    }
+    lastUnlock = Date.now();
+    said("clicking the account");
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    // A sleeping display sends no frames and drops keys: wake it first.
+    await fetch("/sandbox/wake", { method: "POST" }).catch(() => {});
+    await sleep(1500);
+    const key = async (keysym) => {
+      rfb.sendKey(keysym, null, true);
+      await sleep(60);
+      rfb.sendKey(keysym, null, false);
+      await sleep(200);
+    };
+    const x = Math.round(rfb._fbWidth / 2), y = Math.round(rfb._fbHeight * 0.795);
+    for (const mask of [0, 1, 0]) {
+      RFB.messages.pointerEvent(rfb._sock, x, y, mask);
+      await sleep(150);
+    }
+    await sleep(2000);
+    // Someone beat us to it. Only when no one asked: a person pressing
+    // Sign in can see the login screen, whatever the pixels test says.
+    if (!asked && !looksLocked()) return;
+    said("typing the password");
+    // Whatever an earlier attempt left in the field goes first.
+    for (let i = 0; i < 16; i++) await key(0xff08); // XK_BackSpace
+    for (const ch of password) {
+      rfb.sendKey(ch.charCodeAt(0), null, true);
+      await sleep(60);
+      rfb.sendKey(ch.charCodeAt(0), null, false);
+      await sleep(200);
+    }
+    await sleep(300);
+    await key(0xff0d); // XK_Return
+    // The devbox's login window took the digits and ignored Return. If it
+    // is still up, try the keypad's Enter, which the Mac maps separately.
+    await sleep(1500);
+    if (looksLocked()) await key(0xff8d); // XK_KP_Enter
+    await sleep(3000);
+    said(looksLocked() ? "still at the login screen: type it yourself, then tell us" : "signed in");
+  }
+
+  /**
+   * Tell the panel what it is looking at — the device, the lock screen, or
+   * the bare desktop because there is no Simulator window to crop to — so
+   * it can cover the last two with something better than a zoomed-out Mac.
+   */
+  let lastView = "";
+  function view(name) {
+    if (name === lastView) return;
+    lastView = name;
+    parent.postMessage({ type: "vnc", state: "view", view: name }, location.origin);
+  }
+
+  // The panel's Sign in button.
+  addEventListener("message", (e) => {
+    if (e.origin === location.origin && e.data?.type === "vnc-command" && e.data.command === "unlock") {
+      unlock({ asked: true });
+    }
+  });
+
+  async function followWindow() {
+    if (connected && looksLocked()) {
+      lockedPolls++;
+      // What looks locked may be the last frame of a display that went to
+      // sleep. Wake it, so the stream shows the screen as it is now.
+      if (lockedPolls === 1) fetch("/sandbox/wake", { method: "POST" }).catch(() => {});
+      applyCrop(lockColumn());
+      // One odd frame is not a lock screen; two polls running are.
+      if (lockedPolls >= 2) view("locked");
+      unlock();
+      return;
+    }
+    lockedPolls = 0;
+    try {
+      const rect = await fetch("/screen-rect", { cache: "no-store" }).then((r) => r.json());
+      // Applied every time, not only on change: noVNC resets the display
+      // scale to 1 whenever it re-evaluates its own layout, and a stale
+      // scale misplaces every click until the next poll.
+      applyCrop(rect);
+      if (connected) view(rect ? "device" : "desktop");
+    } catch {
+      /* the panel is still useful without a crop */
+    }
+  }
+  setInterval(followWindow, 2000);
+  addEventListener("resize", followWindow);
+
+  let connected = false;
+  rfb.addEventListener("connect", () => {
+    connected = true;
+    msg.classList.add("hidden");
+    screen.classList.remove("hidden");
+    followWindow();
+    parent.postMessage({ type: "vnc", state: "connected" }, location.origin);
+  });
+
+  // noVNC fires this when it is missing a credential and then waits for it
+  // forever, which from the outside is just a black screen. Apple's auth,
+  // which Screen Sharing prefers, asks for a username as well — so having
+  // set VNC_PASSWORD is not enough to avoid landing here.
+  rfb.addEventListener("credentialsrequired", (e) => {
+    const types = e.detail?.types ?? ["password"];
+    const env = types.includes("username")
+      ? "<code>VNC_USER=…</code> and <code>VNC_PASSWORD=…</code> set to a " +
+        "macOS account on this machine"
+      : "<code>VNC_PASSWORD=…</code> set to the Screen Sharing password " +
+        "for this machine";
+    fail(
+      `The screen needs a ${types.join(" and ")}`,
+      `Start the sandbox with ${env}.`,
+    );
+  });
+
+  rfb.addEventListener("securityfailure", (e) => {
+    fail(
+      "The screen refused the connection",
+      `${e.detail?.reason ?? "Authentication failed"}.<br><br>` +
+        `Start the sandbox with <code>VNC_PASSWORD=…</code> set to the ` +
+        `Screen Sharing password for this machine.`,
+    );
+  });
+
+  rfb.addEventListener("disconnect", (e) => {
+    if (e.detail?.clean) {
+      fail("The screen disconnected", "Reload this page to reconnect.");
+    } else if (!connected && password && !username) {
+      // Most likely the type-30 refusal above left nothing to pick: the
+      // legacy VNC password is not switched on.
+      fail(
+        "The screen would not take a VNC password",
+        `Turn on Screen Sharing's VNC password, or start the sandbox with ` +
+          `<code>VNC_USER=…</code> as well. The README has the command.`,
+      );
+    } else {
+      fail(
+        "Lost the connection to the screen",
+        "Screen Sharing may have stopped. Reload to try again.",
+      );
+    }
+    parent.postMessage({ type: "vnc", state: "disconnected" }, location.origin);
+  });
+</script>
+</body>
+</html>

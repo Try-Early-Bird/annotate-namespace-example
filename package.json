@@ -1,0 +1,42 @@
+{
+  "name": "annotate-namespace-example",
+  "private": true,
+  "version": "0.1.0",
+  "description": "An Expo app with the Earlybird annotate overlay, shaped to run in a Namespace devbox.",
+  "main": "expo-router/entry",
+  "scripts": {
+    "sandbox": "node server/run-sandbox.mjs",
+    "devbox": "bash server/devbox.sh",
+    "server": "node server/stub-server.mjs",
+    "start": "expo start",
+    "check": "tsc --noEmit",
+    "postinstall": "npm --prefix panel install --no-audit --no-fund && npm --prefix panel run build",
+    "panel": "npm --prefix panel run dev",
+    "panel:build": "npm --prefix panel run build"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~57.0.9",
+    "@joinearlybird/annotate-react-native": "^0.1.0",
+    "@novnc/novnc": "^1.7.0",
+    "expo": "57.0.8",
+    "expo-constants": "~57.0.10",
+    "expo-linking": "~57.0.5",
+    "expo-router": "~57.0.12",
+    "expo-sensors": "~57.0.1",
+    "expo-status-bar": "~57.0.1",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.0",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0",
+    "react-native-svg": "15.15.4",
+    "react-native-view-shot": "5.1.0",
+    "react-native-web": "~0.21.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "license": "MIT"
+}
