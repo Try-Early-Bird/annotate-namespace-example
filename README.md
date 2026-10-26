@@ -8,6 +8,14 @@ Tap an element in the running app, say what should change, and a coding agent
 on the devbox makes the edit. The change hot reloads in the simulator, and the
 agent's answer comes back to the device the request came from.
 
+<p align="center">
+  <img src="docs/media/panel.png" alt="The panel in a desktop browser: the simulator in the middle showing the app with a green Ship it button, and on the right an agent task marked Needs review with before and after screenshots and its diff, above a team note thread">
+</p>
+
+The panel, open in a desktop browser. The simulator runs in the middle; you
+click into it to use the app. Everything sent from the app appears on the
+right as it happens.
+
 <table>
   <tr>
     <td align="center"><img src="docs/media/aim.png" width="200" alt="The PrimaryButton outlined and labelled PrimaryButton · PrimaryButton.tsx:11"><br><b>Aim</b></td>
@@ -19,7 +27,9 @@ agent's answer comes back to the device the request came from.
 
 These screenshots are from a real run on a local Mac. Claude Code made the
 edit in under a minute: one line in `components/PrimaryButton.tsx` and one in
-`app/index.tsx`.
+`app/index.tsx`. That Mac had Screen Sharing off, so in the panel shot the
+simulator's screen is a capture from the same run rather than the live
+stream.
 
 ## Use it as a template
 
