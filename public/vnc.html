@@ -294,9 +294,13 @@
       // What looks locked may be the last frame of a display that went to
       // sleep. Wake it, so the stream shows the screen as it is now.
       if (lockedPolls === 1) fetch("/sandbox/wake", { method: "POST" }).catch(() => {});
+      // One odd frame is not a lock screen; two polls running are. Until
+      // then keep the crop we had: the first frames after a (re)connect are
+      // dark or half-drawn, and switching to the lock column on one of them
+      // showed the whole desktop strip while the panel still said "device".
+      if (lockedPolls < 2) return;
       applyCrop(lockColumn());
-      // One odd frame is not a lock screen; two polls running are.
-      if (lockedPolls >= 2) view("locked");
+      view("locked");
       unlock();
       return;
     }
