@@ -123,7 +123,9 @@
    * clipping ("Scaling trumps clipping"), and `clipViewport` alone pins the
    * viewport to the container at scale 1.
    */
+  let lastCrop; // undefined until the first crop; null means "fit it all"
   function applyCrop(rect) {
+    lastCrop = rect;
     const canvas = screen.querySelector("canvas");
     const display = rfb._display;
     if (!canvas || !display || !canvas.width) return false;
@@ -313,7 +315,22 @@
     }
   }
   setInterval(followWindow, 2000);
-  addEventListener("resize", followWindow);
+  addEventListener("resize", () => {
+    if (lastCrop !== undefined) applyCrop(lastCrop);
+    followWindow();
+  });
+
+  // noVNC puts the scale back to 1 whenever it re-evaluates its layout:
+  // when the frame resizes (which the first crop causes, by telling the
+  // panel the device's shape) and when the server sends a new desktop size.
+  // Until the next poll that showed the desktop at full size, after the
+  // splash had already gone. Put the crop back in the same frame instead.
+  // Private, like `_display`.
+  const updateScale = rfb._updateScale.bind(rfb);
+  rfb._updateScale = () => {
+    updateScale();
+    if (lastCrop !== undefined) applyCrop(lastCrop);
+  };
 
   let connected = false;
   rfb.addEventListener("connect", () => {

@@ -32,6 +32,24 @@ function simctl(args, timeout = 30_000) {
  */
 const broken = new Set();
 
+/**
+ * Skip the one-time tips iOS shows on a new device, which a tester would
+ * otherwise have to dismiss before the app gets the screen: the "Speed up
+ * your typing by sliding your finger" card the first time the keyboard
+ * comes up. Booted devices only; best-effort, since a device without it
+ * still works.
+ */
+async function quiet(d) {
+  // `boot` returns before the device can take a write; this returns once
+  // it can, and at once for one already up.
+  await simctl(["bootstatus", d.udid], BUNDLE_TIMEOUT_MS).catch(() => {});
+  await simctl([
+    "spawn", d.udid, "defaults", "write", "com.apple.Preferences",
+    "DidShowContinuousPathIntroduction", "-bool", "true",
+  ]).catch(() => {});
+  return d;
+}
+
 /** "com.apple.CoreSimulator.SimRuntime.iOS-26-5" → "iOS 26.5" */
 function runtimeName(id) {
   const m = /SimRuntime\.([A-Za-z]+)-([\d-]+)$/.exec(id);
@@ -93,12 +111,12 @@ export async function bootable(name, log = () => {}) {
     ...devices.filter((d) => d.name !== name && d.kind === "iPhone"),
   ];
   for (const d of candidates) {
-    if (d.state === "Booted") return d;
+    if (d.state === "Booted") return quiet(d);
     try {
       await simctl(["boot", d.udid], BUNDLE_TIMEOUT_MS);
-      return d;
+      return quiet(d);
     } catch (err) {
-      if (/current state: Booted/i.test(err.message)) return d;
+      if (/current state: Booted/i.test(err.message)) return quiet(d);
       broken.add(d.udid);
       log(`${d.name} (${d.runtime}, ${d.udid}) will not boot: ${err.message.split("\n").pop()}`);
     }
@@ -124,7 +142,7 @@ async function fresh(name, log) {
       udid = (await simctl(["create", name, name, r.identifier])).trim();
       await simctl(["boot", udid], BUNDLE_TIMEOUT_MS);
       log(`created ${name} on iOS ${r.version} (${udid})`);
-      return { udid, name, runtime: `iOS ${r.version}`, state: "Booted", kind: /iPad/.test(name) ? "iPad" : "iPhone" };
+      return quiet({ udid, name, runtime: `iOS ${r.version}`, state: "Booted", kind: /iPad/.test(name) ? "iPad" : "iPhone" });
     } catch (err) {
       log(`${name} on iOS ${r.version} will not boot: ${err.message.split("\n").pop()}`);
       if (udid) await simctl(["delete", udid]).catch(() => {});
@@ -162,6 +180,7 @@ export async function moveApp({ from, to, bundleId }) {
   await new Promise((resolve) =>
     execFile("open", ["-a", "Simulator", "--args", "-CurrentDeviceUDID", to.udid], () => resolve()));
   await simctl(["bootstatus", to.udid], BUNDLE_TIMEOUT_MS).catch(() => {});
+  await quiet(to);
   await simctl(["install", to.udid, app], BUNDLE_TIMEOUT_MS);
   await simctl(["launch", to.udid, bundleId]);
   if (from.udid !== to.udid) await simctl(["shutdown", from.udid]).catch(() => {});
