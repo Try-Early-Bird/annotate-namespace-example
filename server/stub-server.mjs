@@ -808,7 +808,11 @@ const server = createServer(async (req, res) => {
 
   // ── Handshake ─────────────────────────────────────────────────────────
   // The overlay calls this once and disables itself on a version mismatch.
-  if (path === "/health") return json(res, 200, { status: "ok", protocolVersion: PROTOCOL_VERSION });
+  // queuesTasks: a task sent while another is working waits its turn in
+  // agentQueue (MAX_JOBS at a time), so the overlay need not block Send.
+  if (path === "/health") {
+    return json(res, 200, { status: "ok", protocolVersion: PROTOCOL_VERSION, queuesTasks: true });
+  }
 
   // Identity is optional: 404 leaves the overlay on its local name tiers,
   // which is exactly what an example should demonstrate.
