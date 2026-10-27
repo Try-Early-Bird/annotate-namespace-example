@@ -14,6 +14,14 @@
     position: absolute; left: 0; top: 0;
     transform-origin: top left;
   }
+  /* Our own pointer, not the Mac's. noVNC sets the canvas's cursor to the
+     image the server sends, and a devbox has no mouse plugged in, so macOS
+     hides its pointer and sends a blank one: the pointer vanished over the
+     screen. Inline, so only !important beats it. A touch-sized circle, like
+     the Simulator's own, since what it stands for is a finger. */
+  #screen canvas {
+    cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28'%3E%3Ccircle cx='14' cy='14' r='11' fill='rgba(255,255,255,.35)' stroke='rgba(0,0,0,.55)' stroke-width='1.5'/%3E%3C/svg%3E") 14 14, pointer !important;
+  }
   .msg {
     position: absolute; inset: 0; display: flex; flex-direction: column;
     gap: 10px; align-items: center; justify-content: center; text-align: center;
@@ -118,15 +126,15 @@
   function applyCrop(rect) {
     const canvas = screen.querySelector("canvas");
     const display = rfb._display;
-    if (!canvas || !display) return;
+    if (!canvas || !display || !canvas.width) return false;
     const box = screen.getBoundingClientRect();
-    if (!box.width || !box.height) return;
+    if (!box.width || !box.height) return false;
 
     if (!rect) {
       // Unknown: fit the whole desktop rather than guess at a crop.
       display.scale = Math.min(box.width / canvas.width, box.height / canvas.height);
       canvas.style.transform = "";
-      return;
+      return true;
     }
     // The rect is in desktop POINTS; the framebuffer may be in pixels (see
     // sim-window.mjs). A pinned SCREEN_RECT has no `desktop` and is taken
@@ -138,6 +146,7 @@
     display.scale = s;
     const dx = (box.width - w * s) / 2;
     canvas.style.transform = `translate(${dx - x * s}px, ${-y * s}px)`;
+    return true;
   }
 
   /**
@@ -295,8 +304,10 @@
       // Applied every time, not only on change: noVNC resets the display
       // scale to 1 whenever it re-evaluates its own layout, and a stale
       // scale misplaces every click until the next poll.
-      applyCrop(rect);
-      if (connected) view(rect ? "device" : "desktop");
+      // The panel keeps its splash up until it hears a view, so only say
+      // "device" once the crop is really on: a view sent before it would
+      // uncover the whole desktop for a moment before it zoomed in.
+      if (applyCrop(rect) && connected) view(rect ? "device" : "desktop");
     } catch {
       /* the panel is still useful without a crop */
     }

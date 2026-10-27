@@ -87,6 +87,14 @@ export function Phone({
     return () => clearTimeout(t);
   }, [view]);
 
+  // Likewise if connected and the viewer never says what it is showing:
+  // whatever it is beats a spinner that never ends.
+  useEffect(() => {
+    if (state !== "connected" || view !== null) return;
+    const t = setTimeout(() => setReveal(true), 15_000);
+    return () => clearTimeout(t);
+  }, [state, view]);
+
   useEffect(() => {
     if (!screen.current) return;
     const ro = new ResizeObserver(([e]) => setWidth(e.contentRect.width));
@@ -189,7 +197,9 @@ function Splash({
         ? "Moving the app to the other simulator."
         : "The first build takes a few minutes — CocoaPods, then a full compile. Later ones are quicker.",
     };
-  } else if (state === "connecting") {
+  } else if (state === "connecting" || (view === null && !reveal)) {
+    // Connected is not ready: until the viewer has cropped to the device
+    // and said so, the frame holds the whole, zoomed-out desktop.
     body = { icon: spin, title: "Connecting to the screen", text: "Opening a session to the simulator." };
   } else if (state === "disconnected") {
     body = null; // the viewer says what went wrong, in the frame
