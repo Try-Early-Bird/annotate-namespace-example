@@ -9,6 +9,10 @@
   /* The window onto the desktop. noVNC's canvas is the WHOLE desktop and is
      moved and scaled underneath so that only the device screen shows. */
   #screen { width: 100%; height: 100%; position: relative; overflow: hidden; }
+  /* Until the first crop is on, the canvas is the desktop at full size:
+     its top-left corner, menu bar and all. Hidden here as well as behind
+     the panel's splash, so it cannot show whatever the panel does. */
+  #screen.uncropped { visibility: hidden; }
   #screen canvas {
     display: block;
     position: absolute; left: 0; top: 0;
@@ -37,7 +41,7 @@
 </style>
 </head>
 <body>
-<div id="screen"></div>
+<div id="screen" class="uncropped"></div>
 <div class="msg hidden" id="msg"><strong id="msgTitle"></strong><div id="msgBody"></div></div>
 
 <script type="module">
@@ -276,6 +280,7 @@
    */
   let lastView = "";
   function view(name) {
+    screen.classList.remove("uncropped");
     if (name === lastView) return;
     lastView = name;
     parent.postMessage({ type: "vnc", state: "view", view: name }, location.origin);
@@ -339,6 +344,9 @@
   let connected = false;
   rfb.addEventListener("connect", () => {
     connected = true;
+    // Never hold the screen hostage: if no view has been reported by now,
+    // something better than black is whatever there is to see.
+    setTimeout(() => screen.classList.remove("uncropped"), 15_000);
     msg.classList.add("hidden");
     screen.classList.remove("hidden");
     followWindow();
