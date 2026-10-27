@@ -34,10 +34,12 @@ stream.
 ## Use it as a template
 
 This repository is the app Namespace checks out, and it installs the package
-from npm the same way your project would. To try the overlay on your own
-screens, fork it and replace `app/` and `components/` with yours. The overlay
-is mounted once in [`app/_layout.tsx`](app/_layout.tsx), and nothing else in
-the app knows it is there.
+from npm the same way your project would. It always gets the newest release:
+`npm install` and `npm ci` fetch `@latest` of the package in `postinstall`,
+while every other dependency stays as the lockfile pins it. To try the overlay
+on your own screens, fork it and replace `app/` and `components/` with yours.
+The overlay is mounted once in [`app/_layout.tsx`](app/_layout.tsx), and
+nothing else in the app knows it is there.
 
 ## Run it on Namespace
 

@@ -10,13 +10,13 @@
     "server": "node server/stub-server.mjs",
     "start": "expo start",
     "check": "tsc --noEmit",
-    "postinstall": "npm --prefix panel install --no-audit --no-fund && npm --prefix panel run build",
+    "postinstall": "npm install @joinearlybird/annotate-react-native@latest --no-save --ignore-scripts --no-audit --no-fund && npm --prefix panel install --no-audit --no-fund && npm --prefix panel run build",
     "panel": "npm --prefix panel run dev",
     "panel:build": "npm --prefix panel run build"
   },
   "dependencies": {
     "@expo/metro-runtime": "~57.0.9",
-    "@joinearlybird/annotate-react-native": "^0.1.1",
+    "@joinearlybird/annotate-react-native": "latest",
     "@novnc/novnc": "^1.7.0",
     "expo": "57.0.8",
     "expo-constants": "~57.0.10",
