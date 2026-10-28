@@ -12,6 +12,12 @@
  * OpenCode and Grok by their `models` commands. Cursor and Gemini have no
  * way to ask, and offer only their own default.
  *
+ * INSTALLED IS NOT CONNECTED. A CLI on PATH that is not signed in lists
+ * its models all the same and then fails every task, so each one is also
+ * asked whether it is signed in (`auth`), with its own status command or,
+ * where it has none, by the credentials it reads. /agent reports it as
+ * `connected`, and the app offers only connected agents.
+ *
  * SHELL ACCESS DIFFERS. Claude Code and Codex run with file tools and no
  * shell by default (`AGENT_TOOLS`, `AGENT_SANDBOX`). The other four have no
  * file-only mode in headless use: auto-approving their edits auto-approves
@@ -24,7 +30,10 @@
  * fall back to the raw output — an unexpected shape costs the progress
  * line, never the reply.
  */
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export const AGENT_TOOLS = (process.env.AGENT_TOOLS ?? "Read Edit Write Glob Grep").split(/\s+/).filter(Boolean);
 export const AGENT_SANDBOX = process.env.AGENT_SANDBOX ?? "workspace-write";
@@ -77,13 +86,16 @@ export const PROVIDERS = {
     bins: ["claude"],
     // STREAMED, so the steps show while it works: one JSON event per line,
     // tool calls among them, the answer last.
-    args: (prompt, dir, model) => [
+    args: (prompt, dir, model, extra, effort) => [
       "-p", prompt,
       "--output-format", "stream-json", "--verbose",
       "--allowedTools", ...AGENT_TOOLS,
       "--permission-mode", "acceptEdits",
       ...(model ? ["--model", model] : []),
+      ...(effort ? ["--effort", effort] : []),
     ],
+    // `claude --help`: --effort <level>.
+    efforts: ["low", "medium", "high", "xhigh", "max"],
     read: (stdout) => replyFrom(stdout, () => null),
     progress: (line) => {
       const event = parse(line);
@@ -92,11 +104,13 @@ export const PROVIDERS = {
       return uses.map((u) => describeTool(u.name, u.input ?? {})).filter(Boolean);
     },
     models: (bin) => claudeModels(bin),
+    // `claude auth status` prints {"loggedIn": true, …}.
+    auth: (bin) => process.env.ANTHROPIC_API_KEY ? true : run(bin, ["auth", "status"]).then((out) => /"loggedIn"\s*:\s*true/.test(out)),
   },
   codex: {
     label: "Codex",
     bins: ["codex"],
-    args: (prompt, dir, model) => [
+    args: (prompt, dir, model, extra, effort) => [
       "exec", prompt,
       "--sandbox", AGENT_SANDBOX,
       "-C", dir,
@@ -105,13 +119,19 @@ export const PROVIDERS = {
       "--ephemeral",
       "--skip-git-repo-check",
       ...(model ? ["-m", model] : []),
+      ...(effort ? ["-c", `model_reasoning_effort="${effort}"`] : []),
     ],
+    // Its model list says which efforts each model takes (codexModels);
+    // these are the ones every current model does.
+    efforts: ["low", "medium", "high", "xhigh"],
     // codex exec streams progress to stderr and prints the final message to
     // stdout, so stdout already IS the answer.
     read: (stdout) => stdout,
     progressFrom: "stderr",
     progress: (line) => line.trim() && !line.startsWith("[") ? [line.trim().slice(0, 120)] : null,
     models: (bin) => codexModels(bin),
+    // `codex login status`: "Logged in using …", or "Not logged in".
+    auth: (bin) => process.env.OPENAI_API_KEY ? true : run(bin, ["login", "status"]).then((out) => /logged in/i.test(out) && !/not logged in/i.test(out)),
   },
   cursor: {
     label: "Cursor",
@@ -135,6 +155,8 @@ export const PROVIDERS = {
       return key ? [describeTool(key, call?.args ?? {})].filter(Boolean) : null;
     },
     models: async () => [],
+    // `cursor-agent status`: "Logged in as …", or "Not logged in".
+    auth: (bin) => process.env.CURSOR_API_KEY ? true : run(bin, ["status"]).then((out) => /logged in/i.test(out) && !/not logged in/i.test(out)),
   },
   opencode: {
     label: "OpenCode",
@@ -161,6 +183,12 @@ export const PROVIDERS = {
     },
     // "provider/model" per line, across every provider the user configured.
     models: (bin) => lineModels(bin, ["models"], (line) => (/^[\w.-]+\/\S+$/.test(line) ? { id: line, label: line } : null)),
+    // `opencode auth list`: "N credentials", plus an "Environment" section
+    // for providers it found keys for in the environment.
+    auth: (bin) => run(bin, ["auth", "list"]).then((out) => {
+      const n = /(\d+)\s+credentials?/i.exec(out);
+      return (n ? Number(n[1]) > 0 : false) || /environment/i.test(out);
+    }),
   },
   gemini: {
     label: "Gemini CLI",
@@ -180,6 +208,11 @@ export const PROVIDERS = {
       return [describeTool(e.tool_name ?? e.name, e.parameters ?? e.args ?? {})].filter(Boolean);
     },
     models: async () => [],
+    // No status command: an API key, Vertex, or the sign-in it stores.
+    auth: async () => Boolean(
+      process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENAI_USE_VERTEXAI ||
+      existsSync(join(homedir(), ".gemini", "oauth_creds.json")),
+    ),
   },
   grok: {
     label: "Grok",
@@ -211,6 +244,7 @@ export const PROVIDERS = {
     }, (out) => (/not authenticated/i.test(out)
       ? { note: "Grok isn't signed in, so its tasks will fail. Run grok once in a terminal to sign in." }
       : {})),
+    auth: (bin) => process.env.XAI_API_KEY ? true : run(bin, ["models"]).then((out) => out.trim() !== "" && !/not authenticated/i.test(out)),
   },
 };
 
@@ -265,6 +299,36 @@ export function detectProviders(providers = PROVIDERS) {
     found[id] = hit ? { installed: true, ...hit, extra: p.probe?.(hit.bin) ?? {} } : { installed: false };
   }
   return found;
+}
+
+// ── Sign-in ─────────────────────────────────────────────────────────────────
+
+/** `bin args`' stdout and stderr together, or "" when it fails to run. Never through a shell. */
+function run(bin, args, timeout = 15_000) {
+  return new Promise((resolveRun) => {
+    execFile(bin, args, { timeout, maxBuffer: 1024 * 1024, env: { ...process.env, NO_COLOR: "1" } }, (err, stdout, stderr) => {
+      resolveRun(err && err.code === "ENOENT" ? "" : `${stdout ?? ""}${stderr ?? ""}`.replace(/\x1b\[[0-9;]*[A-Za-z]/g, ""));
+    });
+  });
+}
+
+/**
+ * Whether each installed agent is signed in, all at once. An agent without
+ * an `auth` check (a custom AGENT_CMD) counts as connected: there is
+ * nothing to ask, and refusing it would make it unusable.
+ */
+export async function checkConnections(found, providers = PROVIDERS) {
+  const out = {};
+  await Promise.all(Object.entries(found).map(async ([id, f]) => {
+    if (!f.installed) return;
+    const p = providers[id];
+    try {
+      out[id] = p?.auth ? Boolean(await p.auth(f.bin)) : true;
+    } catch {
+      out[id] = false;
+    }
+  }));
+  return out;
 }
 
 // ── Model discovery ─────────────────────────────────────────────────────────
@@ -339,11 +403,20 @@ function claudeModels(bin) {
       if (e.type !== "control_response") return null;
       const all = e.response?.response?.models ?? [];
       const def = all.find((m) => m?.value === "default");
+      const defaults = claudeEffortDefaults();
+      // Each model's own levels (an older one may take none), and the
+      // level it runs at when none is asked for: the person's own setting
+      // for that model, else their setting for all of them.
+      const effort = (m) => {
+        const efforts = m?.supportsEffort && Array.isArray(m.supportedEffortLevels) ? m.supportedEffortLevels : [];
+        const set = defaults.perModel[m?.resolvedModel] ?? defaults.all;
+        return { efforts, ...(set && efforts.includes(set) ? { defaultEffort: set } : {}) };
+      };
       const models = all
         .filter((m) => typeof m?.value === "string" && m.value !== "default")
-        .map((m) => ({ id: m.value, label: m.displayName ?? m.value, ...(m.description ? { description: m.description } : {}) }));
+        .map((m) => ({ id: m.value, label: m.displayName ?? m.value, ...(m.description ? { description: m.description } : {}), ...effort(m) }));
       const named = typeof def?.description === "string" ? def.description.split("·")[0].trim() : "";
-      return models.length ? { models, ...(named ? { defaultLabel: named } : {}) } : null;
+      return models.length ? { models, ...(named ? { defaultLabel: named } : {}), ...(def ? effort(def) : {}) } : null;
     },
   );
 }
@@ -361,29 +434,76 @@ function codexModels(bin) {
         return null;
       }
       if (e.id !== 2) return null;
-      return (e.result?.data ?? [])
-        .filter((m) => m && !m.hidden && typeof (m.id ?? m.model) === "string")
-        .map((m) => ({ id: m.id ?? m.model, label: m.displayName ?? m.id ?? m.model, ...(m.isDefault ? { default: true } : {}) }));
+      const listed = (e.result?.data ?? []).filter((m) => m && !m.hidden && typeof (m.id ?? m.model) === "string");
+      // Every effort some listed model takes, in the order the CLI gives them.
+      // Each model's own levels and default; a model_reasoning_effort in
+      // the person's config.toml is the default for every model that takes it.
+      const set = codexEffortDefault();
+      const effort = (m) => {
+        const efforts = (m.supportedReasoningEfforts ?? []).map((r) => r?.reasoningEffort).filter((r) => typeof r === "string");
+        const d = set && efforts.includes(set) ? set : m.defaultReasoningEffort;
+        return { efforts, ...(typeof d === "string" && efforts.includes(d) ? { defaultEffort: d } : {}) };
+      };
+      const models = listed.map((m) => ({
+        id: m.id ?? m.model, label: m.displayName ?? m.id ?? m.model, ...(m.isDefault ? { default: true } : {}), ...effort(m),
+      }));
+      const def = listed.find((m) => m.isDefault);
+      return models.length ? { models, ...(def ? effort(def) : {}) } : null;
     },
   );
 }
 
-/** Each provider's models, cached for a minute: discovery starts a CLI. */
+/** Claude Code's effortLevel settings: for every model, and per resolved model id. */
+function claudeEffortDefaults() {
+  try {
+    const dir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+    const s = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+    const perModel = {};
+    for (const [id, v] of Object.entries(s.modelSettings ?? {})) {
+      if (typeof v?.effortLevel === "string") perModel[id] = v.effortLevel;
+    }
+    return { all: typeof s.effortLevel === "string" ? s.effortLevel : null, perModel };
+  } catch {
+    return { all: null, perModel: {} };
+  }
+}
+
+/** `model_reasoning_effort` at the top of Codex's config.toml, or null. */
+function codexEffortDefault() {
+  try {
+    const dir = process.env.CODEX_HOME || join(homedir(), ".codex");
+    const top = readFileSync(join(dir, "config.toml"), "utf8").split(/^\s*\[/m)[0];
+    return /^\s*model_reasoning_effort\s*=\s*"([a-z]+)"/m.exec(top)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Each provider's models, cached for a minute: discovery starts a CLI.
+ * `fresh` (the app's refresh) skips the cache, so a model the CLI has only
+ * just started offering shows at once.
+ */
 const modelCache = new Map();
-export async function providerModels(id, provider, bin) {
+export async function providerModels(id, provider, bin, fresh = false) {
   const hit = modelCache.get(id);
-  if (hit && Date.now() - hit.at < 60_000) return hit.value;
+  if (!fresh && hit && Date.now() - hit.at < 60_000) return hit.value;
   let value;
   try {
     // A list, or { models, defaultLabel?, note? } when the CLI said more.
     const got = await provider.models(bin);
     const models = Array.isArray(got) ? got : got.models;
     const defaultLabel = (Array.isArray(got) ? null : got.defaultLabel) ?? models.find((m) => m.default)?.label;
+    // The Default row's levels and default; models carry their own.
+    const efforts = (!Array.isArray(got) && got.efforts) || provider.efforts;
+    const defaultEffort = !Array.isArray(got) ? got.defaultEffort : undefined;
     value = {
       ok: true,
       models,
       ...(defaultLabel ? { defaultLabel } : {}),
       ...(!Array.isArray(got) && got.note ? { note: got.note } : {}),
+      ...(efforts?.length ? { efforts } : {}),
+      ...(defaultEffort ? { defaultEffort } : {}),
     };
   } catch (err) {
     value = { ok: false, message: `Could not load ${provider.label}'s models: ${err.message}.` };

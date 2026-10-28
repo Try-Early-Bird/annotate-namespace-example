@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { createLocalStore, sniffImage } from "./assets.mjs";
 import {
-  AGENT_SANDBOX, AGENT_TOOLS, PROVIDERS, PROVIDER_ORDER, customProvider, detectProviders, providerModels,
+  AGENT_SANDBOX, AGENT_TOOLS, PROVIDERS, PROVIDER_ORDER, checkConnections, customProvider, detectProviders, providerModels,
 } from "./agents.mjs";
 
 const PORT = Number(process.argv[process.argv.indexOf("--port") + 1]) || Number(process.env.PORT) || 4788;
@@ -73,6 +73,9 @@ let detected = {};
 let AGENT = null;
 let AGENT_MODEL = process.env.AGENT_MODEL || null;
 let AGENT_ERROR = null;
+/** Which installed agents are signed in (./agents.mjs, INSTALLED IS NOT CONNECTED). */
+let connected = {};
+let connectionsChecked = Promise.resolve();
 
 function useAgent(id) {
   const provider = id === "custom" ? CUSTOM : PROVIDERS[id];
@@ -103,6 +106,20 @@ function detectAgents() {
       `    Codex        npm i -g @openai/codex               (then: codex)\n` +
       `    or Cursor, OpenCode, Gemini CLI or Grok\n` +
       `  ...or point AGENT_CMD at your own: AGENT_CMD="my-agent {prompt}"`;
+  // Signed in or not, asked in the background: a few CLIs, under a second.
+  connectionsChecked = checkConnections(detected, CUSTOM ? { ...PROVIDERS, custom: CUSTOM } : PROVIDERS).then((c) => {
+    connected = c;
+    // An agent nobody named, that is not signed in, would fail every task:
+    // start on the first one that is, when there is one.
+    if (AGENT && !CUSTOM && !named && c[AGENT.id] === false) {
+      const signedIn = PROVIDER_ORDER.find((id) => detected[id]?.installed && c[id]);
+      if (signedIn) {
+        useAgent(signedIn);
+        AGENT_MODEL = null;
+      }
+    }
+    emit("agent.updated", {});
+  });
 }
 
 
@@ -474,9 +491,10 @@ function setRun(annotation, patch) {
 
 function runAgent(id, done, origin = `http://localhost:${PORT}`) {
   const annotation = db.annotations.get(id);
-  // This run's agent and model, taken now: switching them in /agent while
-  // it works changes the NEXT task, not this one half-way through.
-  const agent = AGENT, model = AGENT_MODEL;
+  // This run's agent, model and effort, taken now: the task's own choice,
+  // or the server's current agent — switching that in /agent while it
+  // works changes the NEXT task, not this one half-way through.
+  const { agent, model, effort } = runFor(annotation ?? {});
   if (!annotation || !agent) return done?.();
 
   const wt = WORKTREE ? makeWorktree(id) : null;
@@ -487,15 +505,16 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
     return done?.();
   }
   const workDir = wt ? wt.workDir : AGENT_DIR;
-  const args = agent.args(agentPrompt(annotation), workDir, model, agent.extra);
+  const args = agent.args(agentPrompt(annotation), workDir, model, agent.extra, effort);
   // Only meaningful in place: in a worktree the edits are committed to a
   // branch and reported from there, and nothing lands in your working tree.
   const before = wt ? null : new Set(changedFiles() ?? []);
-  console.log(`    → ${agent.label} working on ${id.slice(0, 8)} in ${wt ? wt.branch : AGENT_DIR}`);
+  const on = [model, effort && `${effort} effort`].filter(Boolean).join(", ");
+  console.log(`    → ${agent.label}${on ? ` (${on})` : ""} working on ${id.slice(0, 8)} in ${wt ? wt.branch : AGENT_DIR}`);
   // The protocol status the overlay's banner reads. Optional and additive:
   // a server that does not run agents never sets it and no banner appears.
   annotation.status = "working";
-  annotation.run = { state: "running", agent: agent.label, model, startedAt: now(), log: [], files: [] };
+  annotation.run = { state: "running", agent: agent.label, model, ...(effort ? { effort } : {}), startedAt: now(), log: [], files: [] };
   addThreadMessage(id, "agent", `${agent.label} is working on it…`);
   // In place, the screen IS the before picture; in a worktree nothing on
   // the device changes, so there is no before/after to show.
@@ -794,7 +813,50 @@ function clientFields(body) {
         ...(typeof r.preview === "string" ? { preview: r.preview.slice(0, 2000) } : {}),
       }));
   }
+  if (out.agent !== undefined) out.agent = cleanTaskAgent(out.agent);
+  if (out.agent === null) delete out.agent;
   return out;
+}
+
+/** An effort level as the CLIs spell them: "low", "xhigh". */
+const EFFORT = /^[a-z]{1,12}$/;
+
+/**
+ * The agent a task asked for (the package's docs/protocol.md, "Agent →
+ * Per task"), or null. Only the shape is checked here; whether that agent
+ * is installed is decided when the task runs.
+ */
+function cleanTaskAgent(a) {
+  if (!a || typeof a !== "object" || typeof a.id !== "string" || !/^[a-z][\w-]{0,39}$/.test(a.id)) return null;
+  return {
+    id: a.id,
+    ...(typeof a.model === "string" && MODEL_ID.test(a.model) ? { model: a.model } : {}),
+    ...(typeof a.effort === "string" && EFFORT.test(a.effort) ? { effort: a.effort } : {}),
+  };
+}
+
+/**
+ * The agent, model and effort a run uses: the task's own choice when that
+ * agent is installed here, else the current agent on its model. An effort
+ * only reaches an agent that takes one.
+ */
+function runFor(annotation) {
+  const asked = annotation.agent;
+  if (asked && asked.id !== AGENT?.id) {
+    const provider = asked.id === "custom" ? CUSTOM : PROVIDERS[asked.id];
+    const found = detected[asked.id];
+    if (provider && found?.installed) {
+      const agent = { id: asked.id, ...provider, bin: found.bin, extra: found.extra ?? {} };
+      return { agent, model: asked.model ?? null, effort: provider.efforts ? asked.effort ?? null : null };
+    }
+  }
+  if (!AGENT) return { agent: null, model: null, effort: null };
+  const own = asked?.id === AGENT.id;
+  return {
+    agent: AGENT,
+    model: own ? asked.model ?? null : AGENT_MODEL,
+    effort: own && AGENT.efforts ? asked.effort ?? null : null,
+  };
 }
 
 /** Store an upload and hand back the reference the protocol expects. */
@@ -819,6 +881,8 @@ function agentState() {
   const ids = [...PROVIDER_ORDER, ...(CUSTOM ? ["custom"] : [])];
   return {
     enabled: AGENT_ENABLED,
+    // Each task runs on the agent, model and effort it carries (runFor).
+    perTask: true,
     current: AGENT
       ? { id: AGENT.id, label: AGENT.label, model: AGENT_MODEL, shell: Boolean(AGENT.shell) }
       : null,
@@ -833,6 +897,7 @@ function agentState() {
         id,
         label: p.label,
         installed: Boolean(found.installed),
+        ...(found.installed ? { connected: connected[id] !== false } : {}),
         ...(found.version ? { version: found.version } : {}),
         shell: Boolean(p.shell),
       };
@@ -1120,6 +1185,9 @@ const server = createServer(async (req, res) => {
   // switch it — which on a devbox is whoever is past its auth gate.
   if (path === "/agent" && req.method === "GET") {
     if (url.searchParams.get("refresh") === "1") detectAgents();
+    // Answer with who is signed in, not a guess: the check takes under a
+    // second, and is given ten before the answer goes without it.
+    await Promise.race([connectionsChecked, new Promise((r) => setTimeout(r, 10_000).unref())]);
     return json(res, 200, agentState());
   }
   if (path === "/agent/models" && req.method === "GET") {
@@ -1128,7 +1196,7 @@ const server = createServer(async (req, res) => {
     const found = detected[id];
     if (!provider) return json(res, 404, { ok: false, message: `unknown agent "${id}"` });
     if (!found?.installed) return json(res, 200, { ok: false, message: `${provider.label} is not installed.` });
-    return json(res, 200, await providerModels(id, provider, found.bin));
+    return json(res, 200, await providerModels(id, provider, found.bin, url.searchParams.get("refresh") === "1"));
   }
   if (path === "/agent" && req.method === "PATCH") {
     if (!AGENT_ENABLED) return json(res, 409, { error: "the agent is off on this server (AGENT=0 / --no-agent)" });
