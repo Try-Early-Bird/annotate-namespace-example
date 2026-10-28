@@ -378,7 +378,8 @@ function agentPrompt(a) {
     "",
     "Edit the source to satisfy the request. Keep it minimal — change what was",
     "asked and nothing else. Metro is watching, so the app reloads by itself.",
-    "Finish with one short sentence saying what you changed.",
+    "Finish with one short sentence saying what you changed, then a last line",
+    "`Title: <3 to 6 words naming the change>` (e.g. `Title: Darker primary button`).",
   );
   return lines.join("\n");
 }
@@ -494,6 +495,41 @@ function setRun(annotation, patch) {
   emit("annotation.updated", { id: annotation.id });
 }
 
+/**
+ * The agent's `Title: …` line, which the prompt asks it to end with: taken
+ * out of the reply (the thread shows the reply without it) and kept as the
+ * run's title, which names the task in the app's Done list. An agent that
+ * leaves it out loses nothing — the list falls back to the request.
+ */
+function takeTitle(text) {
+  const lines = text.split("\n");
+  let i = lines.length - 1;
+  while (i >= 0 && !lines[i].trim()) i--;
+  const m = i >= 0 ? /^\W*title\W*:\s*(.+?)\W*$/i.exec(lines[i].trim()) : null;
+  if (!m) return { reply: text, title: undefined };
+  return { reply: lines.slice(0, i).join("\n").trim(), title: m[1].replace(/[`*_]/g, "").trim().slice(0, 60) || undefined };
+}
+
+/**
+ * RUN HISTORY (the package's docs/protocol.md, "Run history"): one entry
+ * per run on the task's `runs[]`, appended when it starts and finished when
+ * it ends — never rewritten after, so a re-run adds to the record. The
+ * `run` field above stays the panel's view of the latest one (review,
+ * accept, revert); this is what the app's Done tab reads.
+ */
+function startRunRecord(annotation, agent, model, effort) {
+  const record = {
+    id: randomUUID().slice(0, 8),
+    agent: { id: agent.id, label: agent.label },
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+    startedAt: now(),
+    outcome: "running",
+  };
+  annotation.runs = [...(annotation.runs ?? []), record];
+  return record;
+}
+
 function runAgent(id, done, origin = `http://localhost:${PORT}`) {
   const annotation = db.annotations.get(id);
   // This run's agent, model and effort, taken now: the task's own choice,
@@ -505,6 +541,9 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
   const wt = WORKTREE ? makeWorktree(id) : null;
   if (WORKTREE && !wt) {
     addThreadMessage(id, "agent", "Could not create a git worktree for this task.");
+    Object.assign(startRunRecord(annotation, agent, model, effort), {
+      finishedAt: now(), outcome: "failed", error: "Could not create a git worktree for this task.",
+    });
     annotation.status = "pending";
     setRun(annotation, { state: "failed", error: "Could not create a git worktree for this task.", finishedAt: now() });
     return done?.();
@@ -520,6 +559,7 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
   // a server that does not run agents never sets it and no banner appears.
   annotation.status = "working";
   annotation.run = { state: "running", agent: agent.label, model, ...(effort ? { effort } : {}), startedAt: now(), log: [], files: [] };
+  const record = startRunRecord(annotation, agent, model, effort);
   addThreadMessage(id, "agent", `${agent.label} is working on it…`);
   // In place, the screen IS the before picture; in a worktree nothing on
   // the device changes, so there is no before/after to show.
@@ -569,6 +609,7 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
     const err = failedToStart || timedOut || stopped || code !== 0;
     let reply;
     let files = [];
+    let title;
     if (err) {
       // Say what went wrong in the app. A silent failure here looks
       // exactly like an agent that decided to do nothing.
@@ -581,7 +622,8 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
           : `${agent.label} could not run: ${String(failedToStart?.message || stderr || `exit ${code}`).trim().split("\n").pop()}`;
       console.log(`    ✗ ${agent.label} ${stopped ? "stopped" : "failed"} on ${id.slice(0, 8)}: ${reply}`);
     } else {
-      reply = agent.read(stdout).trim() || "Done.";
+      ({ reply, title } = takeTitle(agent.read(stdout).trim()));
+      reply ||= "Done.";
       console.log(`    ✓ ${agent.label} finished ${id.slice(0, 8)}`);
       if (wt) {
         // The work is on a branch, not in front of you — so the reply has
@@ -648,8 +690,17 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
     // Replace the placeholder rather than stacking a second bubble.
     if (a?.thread?.length) a.thread = a.thread.slice(0, -1);
     addThreadMessage(id, "agent", reply.slice(0, 4000));
+    const summary = err ? undefined : reply.split("\n").find((l) => l.trim())?.trim().slice(0, 200);
+    Object.assign(record, {
+      finishedAt: now(),
+      outcome: stopped ? "stopped" : err ? "failed" : "done",
+      ...(files.length ? { files: files.map((f) => ({ path: f.path, ...(typeof f.added === "number" ? { added: f.added } : {}), ...(typeof f.removed === "number" ? { removed: f.removed } : {}) })) } : {}),
+      ...(err ? { error: reply.slice(0, 300) } : summary ? { summary } : {}),
+      ...(title ? { title } : {}),
+    });
     if (a) {
       setRun(a, {
+        ...(title ? { title } : {}),
         state: stopped ? "stopped" : err ? "failed" : files.length ? "review" : "done",
         finishedAt: now(),
         error: err && !stopped ? reply : undefined,
@@ -798,7 +849,7 @@ function dropScreenshots(references, ids = []) {
  */
 const SERVER_OWNED = [
   "sessionId", "createdAt", "updatedAt", "sentAt", "status", "thread", "run", "progress",
-  "reopenedAt", "reopenCount", "placeholderId", "refinedDuringRun", "resolvedAt", "author",
+  "reopenedAt", "reopenCount", "placeholderId", "refinedDuringRun", "resolvedAt", "author", "runs",
 ];
 function clientFields(body) {
   const out = { ...body };
