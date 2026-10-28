@@ -111,9 +111,10 @@ everything sent from the app:
 - **Team notes**, as threads, with **Send to agent** to turn one into a
   task.
 - **Assets**: the app's `assets/` folder. Drop or pick images to upload
-  them to `assets/uploads/`. They then appear in the app's **+ Attach →
-  Assets**, and a picked one reaches the agent as a path it can open and
-  use in code.
+  them to `assets/uploads/`, or paste one straight into the app's composer
+  (Cmd+V on the simulator; copy the image itself, not the file in Finder).
+  They appear in the app's **+ Attach → Assets**, and one attached to a task
+  reaches the agent as a path it can open and use in code.
 - **Connections**: the backend the app posts to, the agent, the simulator
   and the screen.
 

@@ -21,6 +21,7 @@
     "expo": "57.0.8",
     "expo-constants": "~57.0.10",
     "expo-linking": "~57.0.5",
+    "expo-paste-input": "^0.2.2",
     "expo-router": "~57.0.12",
     "expo-sensors": "~57.0.1",
     "expo-status-bar": "~57.0.1",
