@@ -202,11 +202,15 @@ export const PROVIDERS = {
       const path = u.locations?.[0]?.path;
       return [describeTool(u.kind ?? u.title, path ? { path } : {}) ?? u.title].filter(Boolean);
     },
-    // "  * grok-4.6 (default)" / "  - grok-4.5", after a sign-in line.
+    // "  * grok-4.6 (default)" / "  - grok-4.5", under "You are not
+    // authenticated." when it is not signed in — which lists the models
+    // all the same, and then fails every task. Said, not hidden.
     models: (bin) => lineModels(bin, ["models"], (line) => {
       const m = /^\s*[*-]\s+(\S+)(\s+\(default\))?/.exec(line);
       return m ? { id: m[1], label: m[1], ...(m[2] ? { default: true } : {}) } : null;
-    }),
+    }, (out) => (/not authenticated/i.test(out)
+      ? { note: "Grok isn't signed in, so its tasks will fail. Run grok once in a terminal to sign in." }
+      : {})),
   },
 };
 
@@ -267,8 +271,8 @@ export function detectProviders(providers = PROVIDERS) {
 
 const DISCOVERY_TIMEOUT_MS = 20_000;
 
-/** Run `bin args`, keep the lines `pick` turns into models. */
-function lineModels(bin, args, pick) {
+/** Run `bin args`, keep the lines `pick` turns into models; `inspect` may add a note. */
+function lineModels(bin, args, pick, inspect = () => ({})) {
   return new Promise((resolveModels, reject) => {
     const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
@@ -278,7 +282,7 @@ function lineModels(bin, args, pick) {
     child.on("close", () => {
       clearTimeout(timer);
       const models = out.split("\n").map((l) => pick(l.trimEnd())).filter(Boolean);
-      models.length ? resolveModels(models) : reject(new Error("it listed no models"));
+      models.length ? resolveModels({ models, ...inspect(out) }) : reject(new Error("it listed no models"));
     });
   });
 }
@@ -293,7 +297,8 @@ function jsonSession(bin, args, start, onEvent) {
       done = true;
       clearTimeout(timer);
       child.kill();
-      models?.length ? resolveModels(models) : reject(error ?? new Error("it listed no models"));
+      const list = Array.isArray(models) ? models : models?.models;
+      list?.length ? resolveModels(models) : reject(error ?? new Error("it listed no models"));
     };
     const timer = setTimeout(() => finish(null, new Error("it did not answer in time")), DISCOVERY_TIMEOUT_MS);
     const send = (v) => child.stdin.write(JSON.stringify(v) + "\n");
@@ -319,7 +324,9 @@ function jsonSession(bin, args, start, onEvent) {
 /**
  * Claude Code's own list, over the stream-json control channel — the same
  * list its /model picker shows. Its "default" entry is the CLI's default,
- * which is what no --model means, so it is not offered as a model of its own.
+ * which is what no --model means, so it is not offered as a model of its
+ * own; its description names the model it stands for ("Opus 5.5 · …"),
+ * which becomes the Default row's label.
  */
 function claudeModels(bin) {
   return jsonSession(
@@ -330,9 +337,13 @@ function claudeModels(bin) {
     (send) => send({ type: "control_request", request_id: "models", request: { subtype: "initialize" } }),
     (e) => {
       if (e.type !== "control_response") return null;
-      return (e.response?.response?.models ?? [])
+      const all = e.response?.response?.models ?? [];
+      const def = all.find((m) => m?.value === "default");
+      const models = all
         .filter((m) => typeof m?.value === "string" && m.value !== "default")
         .map((m) => ({ id: m.value, label: m.displayName ?? m.value, ...(m.description ? { description: m.description } : {}) }));
+      const named = typeof def?.description === "string" ? def.description.split("·")[0].trim() : "";
+      return models.length ? { models, ...(named ? { defaultLabel: named } : {}) } : null;
     },
   );
 }
@@ -364,7 +375,16 @@ export async function providerModels(id, provider, bin) {
   if (hit && Date.now() - hit.at < 60_000) return hit.value;
   let value;
   try {
-    value = { ok: true, models: await provider.models(bin) };
+    // A list, or { models, defaultLabel?, note? } when the CLI said more.
+    const got = await provider.models(bin);
+    const models = Array.isArray(got) ? got : got.models;
+    const defaultLabel = (Array.isArray(got) ? null : got.defaultLabel) ?? models.find((m) => m.default)?.label;
+    value = {
+      ok: true,
+      models,
+      ...(defaultLabel ? { defaultLabel } : {}),
+      ...(!Array.isArray(got) && got.note ? { note: got.note } : {}),
+    };
   } catch (err) {
     value = { ok: false, message: `Could not load ${provider.label}'s models: ${err.message}.` };
   }

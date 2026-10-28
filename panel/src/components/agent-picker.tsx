@@ -77,7 +77,9 @@ export function AgentPicker({ onChanged }: { onChanged?: () => void }) {
             <SelectValue placeholder="Loading models…" />
           </SelectTrigger>
           <SelectContent position="popper" className="max-h-80">
-            <SelectItem value={DEFAULT}>Default</SelectItem>
+            <SelectItem value={DEFAULT}>
+              {models?.ok && models.defaultLabel ? `Default (${models.defaultLabel})` : "Default"}
+            </SelectItem>
             {/* A model set elsewhere that this list does not have still shows. */}
             {config.current.model && models?.ok && !models.models.some((m) => m.id === config.current?.model) && (
               <SelectItem value={config.current.model}>{config.current.model}</SelectItem>
@@ -96,6 +98,7 @@ export function AgentPicker({ onChanged }: { onChanged?: () => void }) {
       </Button>
       {busy && <Spinner className="size-3" />}
       {models && !models.ok && <span className="text-xs text-muted-foreground">{models.message}</span>}
+      {models?.ok && models.note && <span className="text-xs text-destructive">{models.note}</span>}
       {error && <span className="text-xs text-destructive">{error}</span>}
     </div>
   );

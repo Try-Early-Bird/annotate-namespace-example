@@ -143,7 +143,9 @@ export type AgentConfig = {
   agents: AgentChoice[];
 };
 export type AgentModel = { id: string; label: string; description?: string; default?: boolean };
-export type AgentModels = { ok: true; models: AgentModel[] } | { ok: false; message: string };
+export type AgentModels =
+  | { ok: true; models: AgentModel[]; defaultLabel?: string; note?: string }
+  | { ok: false; message: string };
 
 export async function getAgent(refresh = false): Promise<AgentConfig> {
   const r = await fetch(`${API}/agent${refresh ? "?refresh=1" : ""}`, { cache: "no-store" });
