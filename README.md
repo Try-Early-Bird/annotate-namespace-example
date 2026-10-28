@@ -71,16 +71,27 @@ safe to run every time.
 
 ### The agent makes the change
 
-**Send to agent** hands the task to Claude Code, or to Codex if Claude Code
-is not installed. The sandbox checks which is on the `PATH` when it starts
-and prints the one it found. With neither, tasks stay in the queue and
-Send replies in the task with how to install one.
+**Send to agent** hands the task to whichever agent CLI is installed:
+Claude Code, Codex, Cursor, OpenCode, Gemini CLI or Grok, tried in that
+order. The sandbox checks the `PATH` when it starts and prints what it
+found. With none, tasks stay in the queue and Send replies in the task with
+how to install one.
+
+Switch the agent and its model while it runs, from the app's **Settings →
+Agent** or the panel's **Connections → Agent**. The models listed are the
+ones each agent's own CLI reports. **Check again** picks up an agent you
+installed after starting.
 
 ```bash
-npm run devbox                 # Claude Code, else Codex, whichever is installed
-AGENT=codex npm run devbox     # this one, even if the other is installed
+npm run devbox                 # the first installed agent
+AGENT=codex npm run devbox     # start with this one
 AGENT=0 npm run devbox         # no agent: tasks are only stored
 ```
+
+Claude Code and Codex run with file tools and no shell. Cursor, OpenCode,
+Gemini CLI and Grok have no file-only headless mode: their edits are
+auto-approved, and that includes shell commands. The sandbox says so when
+one of them is in use.
 
 The agent edits the app in place, so the change hot reloads in the
 simulator. The stub's other settings pass through the same way: `WORKTREE=1`
