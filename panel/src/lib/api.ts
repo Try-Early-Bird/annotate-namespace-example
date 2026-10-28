@@ -168,6 +168,42 @@ export async function setAgent(change: { agent?: string; model?: string | null }
   return body;
 }
 
+/** The app's assets/ folder, as the stub lists it (docs/assets.md in the package). */
+export type Asset = {
+  path: string;
+  name: string;
+  publicPath: string;
+  agentPath?: string;
+  contentType: string | null;
+  size: number;
+  uploaded: string;
+};
+
+export async function listAssets(): Promise<{ assets: Asset[]; writable: boolean }> {
+  const r = await fetch(`${API}/assets`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/** Through the front door: the stub's own previewUrl is for the app, not a browser. */
+export function assetPreview(asset: Asset): string | null {
+  return asset.contentType ? `${API}/assets/raw/${asset.path.split("/").map(encodeURIComponent).join("/")}` : null;
+}
+
+export async function uploadAsset(file: File): Promise<Asset> {
+  const form = new FormData();
+  form.append("file", file, file.name);
+  const r = await fetch(`${API}/assets`, { method: "POST", body: form });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+  return body;
+}
+
+export async function deleteAsset(path: string): Promise<void> {
+  const r = await fetch(`${API}/assets/${path.split("/").map(encodeURIComponent).join("/")}`, { method: "DELETE" });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+}
+
 export async function switchDevice(udid: string) {
   const r = await fetch("/sandbox/device", {
     method: "POST",

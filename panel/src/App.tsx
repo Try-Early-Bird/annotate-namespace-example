@@ -12,6 +12,7 @@ import { Person } from "@/components/feedback-parts";
 import type { Author } from "@/lib/api";
 import { buildFeed } from "@/lib/feed";
 import { agentState, backendState, buildState, screenState } from "@/lib/derive";
+import { Assets } from "@/components/assets";
 
 function Pill({ tone, label, value }: { tone: Tone; label: string; value: string }) {
   return (
@@ -134,6 +135,7 @@ export default function App() {
             the header, and Feedback takes whatever Connections leaves. */}
         <aside className="flex flex-col gap-4 lg:sticky lg:top-20 lg:h-[calc(100dvh-112px)]">
           <Feedback tasks={feed.tasks} notes={feed.notes} refresh={feed.refresh} agent={status?.agent ?? null} session={status?.protocol.session ?? "sandbox-session"} className="lg:min-h-[45%] lg:flex-1" />
+          <Assets />
           <Connections status={status} screen={screen} />
         </aside>
       </main>

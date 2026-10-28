@@ -23,6 +23,7 @@ import { readFile, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { createLocalStore, sniffImage } from "./assets.mjs";
 import {
   AGENT_SANDBOX, AGENT_TOOLS, PROVIDERS, PROVIDER_ORDER, customProvider, detectProviders, providerModels,
 } from "./agents.mjs";
@@ -223,6 +224,20 @@ const AGENT_DIR = process.env.AGENT_DIR
 const AGENT_TIMEOUT_MS = Number(process.env.AGENT_TIMEOUT_MS) || 180_000;
 
 /**
+ * THE APP'S ASSETS (docs/assets.md in the package): its assets/ folder,
+ * listed for + Attach → Assets. Writable here: the panel uploads images to
+ * assets/uploads/ and can delete them. Each is a file in the agent's
+ * checkout, so a picked asset reaches the agent as a path it can open and
+ * require(), and a new one hot reloads like any other edit.
+ */
+const ASSETS = createLocalStore({
+  dir: process.env.ASSETS_DIR ? resolve(process.env.ASSETS_DIR) : join(AGENT_DIR, "assets"),
+  appDir: AGENT_DIR,
+  writable: true,
+});
+const ASSET_UPLOAD_MAX = 16 * 1024 * 1024;
+
+/**
  * WORKTREE MODE — `--worktree`, optionally `--jobs N`.
  *
  * Without it every run edits AGENT_DIR directly, which is what makes the
@@ -290,6 +305,27 @@ function emit(type, payload = {}) {
  * field rode at the default detail level, the agent had the component and
  * no way to tell which use of it was meant.
  */
+/**
+ * Every reference, as a line the agent can act on (docs/assets.md in the
+ * package). Before this the prompt left them out, so a picked asset
+ * reached nobody. Screenshots are the server's own and are skipped.
+ */
+function attachedLines(references) {
+  const one = (s) => String(s ?? "").replace(/\s+/g, " ").slice(0, 300);
+  const out = [];
+  for (const r of Array.isArray(references) ? references.slice(0, 20) : []) {
+    if (!r || typeof r.value !== "string" || r.type === "screenshot") continue;
+    const label = r.label ? `${one(r.label)}: ` : "";
+    if (r.type === "asset") {
+      out.push(`  asset ${label}use ${JSON.stringify(one(r.value))} in code` +
+        (r.open ? `; open ${one(r.open)} to see it` : ""));
+    } else if (r.type === "url") out.push(`  link ${label}${one(r.value)}`);
+    else if (r.type === "api") out.push(`  data API ${label}${one(r.value)}`);
+    else out.push(`  ${one(r.type)} ${label}${one(r.value)}`);
+  }
+  return out;
+}
+
 function agentPrompt(a) {
   const lines = [
     "A developer annotated a running React Native screen. Make the change they asked for.",
@@ -307,6 +343,8 @@ function agentPrompt(a) {
   }
   if (a.testID) lines.push(`  testID: ${a.testID}`);
   if (a.routeName) lines.push(`  screen: ${a.routeName}`);
+  const attached = attachedLines(a.references);
+  if (attached.length) lines.push("", "ATTACHED (what they picked to go with the request):", ...attached);
   lines.push(
     "",
     "Edit the source to satisfy the request. Keep it minimal — change what was",
@@ -667,12 +705,38 @@ function firstFilePart(buf, contentType) {
   return null;
 }
 
+/** The first file part of a multipart body with its file name, or null. */
+function namedFilePart(buf, contentType) {
+  const boundary = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType || "");
+  if (!boundary) return null;
+  const marker = Buffer.from(`--${boundary[1] || boundary[2]}`);
+  const headerEnd = Buffer.from("\r\n\r\n");
+  let from = buf.indexOf(marker);
+  while (from !== -1) {
+    const headStop = buf.indexOf(headerEnd, from + marker.length);
+    if (headStop === -1) break;
+    const headers = buf.subarray(from + marker.length, headStop).toString("utf8");
+    const next = buf.indexOf(marker, headStop);
+    const name = /filename="([^"]*)"/i.exec(headers);
+    if (name) {
+      return { filename: name[1], bytes: buf.subarray(headStop + headerEnd.length, next === -1 ? buf.length : next - 2) };
+    }
+    from = next;
+  }
+  return null;
+}
+
 /** Store an upload and hand back the reference the protocol expects. */
 function storeScreenshot(buf, contentType, origin) {
   const part = firstFilePart(buf, contentType);
   if (!part) return null;
+  // The type is read from the bytes. The part's own Content-Type is the
+  // caller's claim, and stored as given it was served back as given — an
+  // "image" of text/html would have run on the panel's origin.
+  const type = sniffImage(part.bytes);
+  if (!type) return { refused: true };
   const id = randomUUID();
-  db.screenshots.set(id, part);
+  db.screenshots.set(id, { contentType: type, bytes: part.bytes });
   return { type: "screenshot", url: `${origin}/screenshots/${id}`, name: "screenshot.png" };
 }
 
@@ -713,7 +777,11 @@ detectAgents();
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? `localhost:${PORT}`}`);
   const path = url.pathname.replace(/\/+$/, "") || "/";
-  const origin = `http://${req.headers.host ?? `localhost:${PORT}`}`;
+  // The base for URLs handed back to the APP. Behind the sandbox's front
+  // door the app reaches this server under /__annotate, which the Host
+  // header does not carry: built from Host, screenshot links pointed at
+  // Metro and never loaded in the app. PUBLIC_ORIGIN is that full base.
+  const origin = process.env.PUBLIC_ORIGIN || `http://${req.headers.host ?? `localhost:${PORT}`}`;
   const seg = path.split("/").filter(Boolean);
 
   if (req.method === "OPTIONS") {
@@ -834,6 +902,7 @@ const server = createServer(async (req, res) => {
       if (!annotation) return json(res, 404, { error: "no such annotation" });
       const ref = storeScreenshot(await readBody(req), req.headers["content-type"], origin);
       if (!ref) return json(res, 400, { error: "no file part" });
+      if (ref.refused) return json(res, 415, { error: "not a PNG, JPEG, GIF or WebP image" });
       annotation.references = [...(annotation.references ?? []), ref];
       emit("annotation.updated", { id });
       return json(res, 201, ref);
@@ -934,6 +1003,7 @@ const server = createServer(async (req, res) => {
       if (!comment) return json(res, 404, { error: "no such comment" });
       const ref = storeScreenshot(await readBody(req), req.headers["content-type"], origin);
       if (!ref) return json(res, 400, { error: "no file part" });
+      if (ref.refused) return json(res, 415, { error: "not a PNG, JPEG, GIF or WebP image" });
       comment.references = [...(comment.references ?? []), ref];
       emit("comment.updated", { id });
       return json(res, 201, ref);
@@ -1057,11 +1127,58 @@ const server = createServer(async (req, res) => {
     return res.end(patch);
   }
 
+  // ── The app's assets ──────────────────────────────────────────────────
+  if (path === "/assets" && req.method === "GET") {
+    return json(res, 200, { assets: await ASSETS.list(`${origin}/assets/raw`), writable: ASSETS.writable });
+  }
+  if (path === "/assets" && req.method === "POST") {
+    const buf = await readBody(req);
+    if (buf.length > ASSET_UPLOAD_MAX) return json(res, 413, { error: "an asset may be 16 MB at most" });
+    const part = namedFilePart(buf, req.headers["content-type"]);
+    if (!part) return json(res, 400, { error: "no file part" });
+    try {
+      const asset = await ASSETS.put(part.filename, part.bytes, `${origin}/assets/raw`);
+      console.log(`    + asset ${asset.publicPath}`);
+      emit("asset.created", { path: asset.path });
+      return json(res, 201, asset);
+    } catch (err) {
+      return json(res, err.status ?? 500, { error: err.message });
+    }
+  }
+  if (seg[0] === "assets" && seg[1] === "raw" && req.method === "GET") {
+    const file = await ASSETS.read(seg.slice(2).map((s) => decodeURIComponent(s)).join("/"));
+    if (!file) return json(res, 404, { error: "no such image" });
+    // An image and nothing else: the type its bytes have, no guessing
+    // another, and nothing in it may run — the panel shares this origin.
+    res.writeHead(200, {
+      "Content-Type": file.contentType,
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Cache-Control": "no-store",
+    });
+    return res.end(file.bytes);
+  }
+  if (seg[0] === "assets" && seg[1] && req.method === "DELETE") {
+    try {
+      const gone = await ASSETS.remove(seg.slice(1).map((s) => decodeURIComponent(s)).join("/"));
+      if (!gone) return json(res, 404, { error: "no such asset" });
+      emit("asset.deleted", {});
+      return noContent(res);
+    } catch (err) {
+      return json(res, err.status ?? 500, { error: err.message });
+    }
+  }
+
   // ── Uploaded screenshots, served back ─────────────────────────────────
   if (seg[0] === "screenshots" && seg[1] && req.method === "GET") {
     const shot = db.screenshots.get(seg[1]);
     if (!shot) return json(res, 404, { error: "expired" });
-    res.writeHead(200, { "Content-Type": shot.contentType, "Access-Control-Allow-Origin": "*" });
+    res.writeHead(200, {
+      "Content-Type": shot.contentType,
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; sandbox",
+      "Access-Control-Allow-Origin": "*",
+    });
     return res.end(shot.bytes);
   }
 
