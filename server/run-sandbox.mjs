@@ -51,6 +51,7 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
+import { isIP } from "node:net";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, normalize, resolve, sep } from "node:path";
@@ -409,7 +410,46 @@ async function sandboxStatus() {
 }
 
 /** Hand a request to one of the two servers, unchanged apart from the prefix. */
+/**
+ * WHO MAY USE THE FRONT DOOR FROM A BROWSER.
+ *
+ * Everything goes through this door: the panel, the screen, the agent's
+ * routes. A page you happen to visit can send requests to localhost too,
+ * so two checks come before anything is served:
+ *
+ * - Off a devbox, the Host must be localhost or an IP address. A page that
+ *   points its own domain at 127.0.0.1 (DNS rebinding) would otherwise be
+ *   "same-site" with this door. On a devbox, Namespace's proxy and its
+ *   sign-in are in front, and the Host is the devbox's own name.
+ * - A request that CHANGES something (anything but GET, HEAD and OPTIONS),
+ *   and every WebSocket (the screen, Metro), must come from this door's own
+ *   origin or from no browser at all: the app sends no Origin, or its own.
+ *   Reads are covered by the stub sending no CORS headers, so another
+ *   site's page cannot read what it gets back.
+ */
+function refused(req, { writes }) {
+  const host = req.headers.host ?? "";
+  if (!onDevbox) {
+    const name = host.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
+    if (name && name !== "localhost" && isIP(name) === 0) return "unexpected Host";
+  }
+  const from = req.headers.origin;
+  if (!from || !writes) return null;
+  if (from === "null") return "opaque origin";
+  try {
+    return new URL(from).host === host ? null : "cross-site request";
+  } catch {
+    return "bad Origin";
+  }
+}
+
 const proxy = (req, res) => {
+  const no = refused(req, { writes: !["GET", "HEAD", "OPTIONS"].includes(req.method) });
+  if (no) {
+    res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end(`refused: ${no}\n`);
+    return;
+  }
   // The shell is served BY the devbox, so its <iframe src="/"> is resolved
   // against the devbox's own origin — same origin, so the session cookie
   // goes with it and nothing is blocked. A shell served from a laptop
@@ -591,6 +631,7 @@ const vnc = !vncUp ? null : shared
   : createVncBridge({ host: VNC_HOST, port: VNC_PORT, onLog: (m) => console.error(m) });
 
 front.on("upgrade", (req, socket, head) => {
+  if (refused(req, { writes: true })) { socket.destroy(); return; }
   if (req.url === "/websockify" || req.url.startsWith("/websockify?")) {
     if (!vnc) { socket.destroy(); return; }
     vnc.handleUpgrade(req, socket, head);

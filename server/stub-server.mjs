@@ -437,7 +437,7 @@ function simulatorShot() {
         try {
           const bytes = await readFile(file);
           const id = randomUUID();
-          db.screenshots.set(id, { contentType: "image/png", bytes });
+          keepScreenshot(id, { contentType: "image/png", bytes });
           done(id);
         } catch { done(null); }
         rm(file, { force: true }).catch(() => {});
@@ -664,11 +664,10 @@ const json = (res, status, body) => {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(text),
     // The examples run the app and the server on different ports.
-    "Access-Control-Allow-Origin": "*",
   });
   res.end(text);
 };
-const noContent = (res) => { res.writeHead(204, { "Access-Control-Allow-Origin": "*" }); res.end(); };
+const noContent = (res) => { res.writeHead(204); res.end(); };
 
 async function readBody(req) {
   const chunks = [];
@@ -733,6 +732,71 @@ function namedFilePart(buf, contentType) {
   return null;
 }
 
+/**
+ * SCREENSHOTS ARE CAPPED IN MEMORY: uploads and every run's before and
+ * after. Past SCREENSHOTS_MB (256 by default) the oldest go first, and a
+ * task or note takes its own with it when deleted. An evicted one answers
+ * 404, which the app and the panel show as "could not be loaded".
+ */
+const SCREENSHOTS_MAX = (Number(process.env.SCREENSHOTS_MB) || 256) * 1024 * 1024;
+let screenshotBytes = 0;
+
+function keepScreenshot(id, shot) {
+  db.screenshots.set(id, shot);
+  screenshotBytes += shot.bytes.length;
+  for (const [old, held] of db.screenshots) {
+    if (screenshotBytes <= SCREENSHOTS_MAX || old === id) break;
+    db.screenshots.delete(old);
+    screenshotBytes -= held.bytes.length;
+  }
+}
+
+/** Drop a task's or note's screenshots: those its references point at, and any ids given. */
+function dropScreenshots(references, ids = []) {
+  const all = [
+    ...(references ?? []).filter((r) => r?.type === "screenshot").map((r) => String(r.url ?? r.value ?? "").split("/").pop()),
+    ...ids,
+  ];
+  for (const id of all) {
+    const held = id && db.screenshots.get(id);
+    if (!held) continue;
+    db.screenshots.delete(id);
+    screenshotBytes -= held.bytes.length;
+  }
+}
+
+/**
+ * What a client may set on a new task or note. Fields only the server
+ * writes are dropped — sent by a client, `run` or `progress` made a task
+ * look mid-run, and `reopenedAt` reopened one that never was — and
+ * references are kept to their protocol strings, with no client-made
+ * screenshot (the server adds those when the upload lands).
+ */
+const SERVER_OWNED = [
+  "sessionId", "createdAt", "updatedAt", "sentAt", "status", "thread", "run", "progress",
+  "reopenedAt", "reopenCount", "placeholderId", "refinedDuringRun", "resolvedAt", "author",
+];
+function clientFields(body) {
+  const out = { ...body };
+  for (const key of SERVER_OWNED) delete out[key];
+  for (const key of ["comment", "content", "nearbyText", "selectedText"]) {
+    if (typeof out[key] === "string") out[key] = out[key].slice(0, 4000);
+  }
+  if (out.references !== undefined) {
+    out.references = (Array.isArray(out.references) ? out.references : [])
+      .filter((r) => r && typeof r === "object" && typeof r.type === "string" && typeof r.value === "string" && r.type !== "screenshot")
+      .slice(0, 20)
+      .map((r) => ({
+        type: r.type.slice(0, 40),
+        value: r.value.slice(0, 2000),
+        ...(typeof r.label === "string" ? { label: r.label.slice(0, 200) } : {}),
+        ...(typeof r.open === "string" ? { open: r.open.slice(0, 2000) } : {}),
+        ...(typeof r.preview === "string" ? { preview: r.preview.slice(0, 2000) } : {}),
+      }));
+  }
+  return out;
+}
+
 /** Store an upload and hand back the reference the protocol expects. */
 function storeScreenshot(buf, contentType, origin) {
   const part = firstFilePart(buf, contentType);
@@ -743,7 +807,7 @@ function storeScreenshot(buf, contentType, origin) {
   const type = sniffImage(part.bytes);
   if (!type) return { refused: true };
   const id = randomUUID();
-  db.screenshots.set(id, { contentType: type, bytes: part.bytes });
+  keepScreenshot(id, { contentType: type, bytes: part.bytes });
   return { type: "screenshot", url: `${origin}/screenshots/${id}`, name: "screenshot.png" };
 }
 
@@ -793,7 +857,6 @@ const server = createServer(async (req, res) => {
 
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
-      "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type,Authorization",
     });
@@ -836,8 +899,7 @@ const server = createServer(async (req, res) => {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
-        "Access-Control-Allow-Origin": "*",
-      });
+        });
       res.write(": connected\n\n");
       listeners.add(res);
       const keepAlive = setInterval(() => { try { res.write(": ping\n\n"); } catch {} }, 15000);
@@ -851,7 +913,7 @@ const server = createServer(async (req, res) => {
       // Protocol v1 ECHOES the client's id. (agentation-mcp assigns its own
       // instead, which is why the client always re-keys to what it gets back.)
       const id = typeof body.id === "string" && body.id ? body.id : randomUUID();
-      const annotation = { ...body, id, sessionId: sid, status: "pending", createdAt: now() };
+      const annotation = { ...clientFields(body), id, sessionId: sid, status: "pending", createdAt: now() };
       db.annotations.set(id, annotation);
       db.sessions.set(sid, db.sessions.get(sid) ?? { id: sid, createdAt: now() });
       emit("annotation.created", { id });
@@ -972,6 +1034,7 @@ const server = createServer(async (req, res) => {
     }
     if (!seg[2] && req.method === "DELETE") {
       db.annotations.delete(id);
+      if (annotation) dropScreenshots(annotation.references, [annotation.run?.before, annotation.run?.after]);
       emit("annotation.deleted", { id });
       return noContent(res);
     }
@@ -982,7 +1045,7 @@ const server = createServer(async (req, res) => {
     const body = parseJson(await readBody(req));
     if (!body) return json(res, 400, { error: "invalid JSON" });
     const id = randomUUID();
-    const { content, authorName, id: _ignored, messages: _alsoIgnored, ...capture } = body;
+    const { content, authorName, id: _ignored, messages: _alsoIgnored, ...capture } = clientFields(body);
     const author = authorFrom(authorName);
     const at = now();
     // The note's text is its FIRST MESSAGE, not a field of its own: a note
@@ -1040,7 +1103,9 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { comment });
     }
     if (!seg[2] && req.method === "DELETE") {
+      const comment = db.comments.get(id);
       db.comments.delete(id);
+      if (comment) dropScreenshots(comment.references);
       emit("comment.deleted", { id });
       return noContent(res);
     }
@@ -1129,7 +1194,6 @@ const server = createServer(async (req, res) => {
     if (!patch) return json(res, 404, { error: "no diff for this task" });
     res.writeHead(200, {
       "Content-Type": "text/plain; charset=utf-8",
-      "Access-Control-Allow-Origin": "*",
     });
     return res.end(patch);
   }
@@ -1184,7 +1248,6 @@ const server = createServer(async (req, res) => {
       "Content-Type": shot.contentType,
       "X-Content-Type-Options": "nosniff",
       "Content-Security-Policy": "default-src 'none'; sandbox",
-      "Access-Control-Allow-Origin": "*",
     });
     return res.end(shot.bytes);
   }
