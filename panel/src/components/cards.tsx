@@ -331,6 +331,23 @@ function TaskBody({
   );
 }
 
+/**
+ * What the task runs on, in a few words: the run's own record once it has
+ * started, else what the task asked for. "Claude Code · sonnet · high".
+ */
+const AGENT_NAMES: Record<string, string> = {
+  claude: "Claude Code", codex: "Codex", cursor: "Cursor", opencode: "OpenCode", gemini: "Gemini CLI", grok: "Grok",
+};
+
+function runsOn(mark: Mark): string | null {
+  const r = mark.run;
+  const parts = r?.agent
+    ? [r.agent, r.model, r.effort]
+    : mark.agent ? [AGENT_NAMES[mark.agent.id] ?? mark.agent.id, mark.agent.model, mark.agent.effort] : [];
+  const text = parts.filter(Boolean).join(" · ");
+  return text || null;
+}
+
 function taskHead(mark: Mark, state: TaskState, number: number | null) {
   const pill = {
     queued: <Pill tone="agent">Queued</Pill>,
@@ -353,7 +370,8 @@ export function TaskCard({
       edge={state === "failed" ? "failed" : state === "running" || state === "review" ? "agent" : undefined}
       head={<>
         {badge}{pill}
-        <span className="ml-auto text-[11px] text-muted-foreground">{ago(mark.run?.finishedAt ?? mark.createdAt)}</span>
+        {runsOn(mark) && <span className="truncate text-[11px] text-muted-foreground">{runsOn(mark)}</span>}
+        <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{ago(mark.run?.finishedAt ?? mark.createdAt)}</span>
         <RowMenu what="task" onDelete={() => attempt("delete the task", () => deleteTask(mark.id)).then((ok) => { onChange(); return ok; })} />
       </>}
     >

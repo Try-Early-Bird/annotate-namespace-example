@@ -64,14 +64,18 @@ const AGENT_ENABLED = !AGENT_OFF;
 /**
  * THE CURRENT AGENT — mutable, because /agent switches it.
  *
- * `AGENT` is the provider in use with its binary resolved (or null), and
- * `AGENT_MODEL` the model it is asked for (null: the CLI's own default).
- * A run takes both at its start, so switching mid-run changes the NEXT task.
+ * `AGENT` is the provider in use with its binary resolved (or null),
+ * `AGENT_MODEL` the model it is asked for (null: the CLI's own default) and
+ * `AGENT_EFFORT` the effort (null: the model's default). They are the
+ * server's DEFAULT: a task made in the app carries its own (runFor); one
+ * made in the panel, from a note, runs on these. A run takes them at its
+ * start, so switching mid-run changes the NEXT task.
  */
 const CUSTOM = customProvider();
 let detected = {};
 let AGENT = null;
 let AGENT_MODEL = process.env.AGENT_MODEL || null;
+let AGENT_EFFORT = null;
 let AGENT_ERROR = null;
 /** Which installed agents are signed in (./agents.mjs, INSTALLED IS NOT CONNECTED). */
 let connected = {};
@@ -116,6 +120,7 @@ function detectAgents() {
       if (signedIn) {
         useAgent(signedIn);
         AGENT_MODEL = null;
+        AGENT_EFFORT = null;
       }
     }
     emit("agent.updated", {});
@@ -855,7 +860,7 @@ function runFor(annotation) {
   return {
     agent: AGENT,
     model: own ? asked.model ?? null : AGENT_MODEL,
-    effort: own && AGENT.efforts ? asked.effort ?? null : null,
+    effort: AGENT.efforts ? (own ? asked.effort ?? null : AGENT_EFFORT) : null,
   };
 }
 
@@ -884,7 +889,7 @@ function agentState() {
     // Each task runs on the agent, model and effort it carries (runFor).
     perTask: true,
     current: AGENT
-      ? { id: AGENT.id, label: AGENT.label, model: AGENT_MODEL, shell: Boolean(AGENT.shell) }
+      ? { id: AGENT.id, label: AGENT.label, model: AGENT_MODEL, effort: AGENT_EFFORT, shell: Boolean(AGENT.shell) }
       : null,
     // The first line only: the rest is install instructions for a terminal.
     error: AGENT_ENABLED && !AGENT ? (AGENT_ERROR ?? "").split("\n")[0] : null,
@@ -1206,8 +1211,8 @@ const server = createServer(async (req, res) => {
       const known = body.agent === "custom" ? CUSTOM : PROVIDERS[body.agent];
       if (!known) return json(res, 400, { error: `unknown agent "${String(body.agent).slice(0, 40)}"` });
       if (!detected[body.agent]?.installed) return json(res, 400, { error: `${known.label} is not installed` });
-      // A model belongs to an agent: a new agent starts on its own default.
-      if (AGENT?.id !== body.agent) AGENT_MODEL = null;
+      // A model and an effort belong to an agent: a new one starts on its defaults.
+      if (AGENT?.id !== body.agent) { AGENT_MODEL = null; AGENT_EFFORT = null; }
       useAgent(body.agent);
       AGENT_ERROR = null;
     }
@@ -1217,9 +1222,20 @@ const server = createServer(async (req, res) => {
       if (body.model !== null && !(typeof body.model === "string" && MODEL_ID.test(body.model))) {
         return json(res, 400, { error: "model must be null or a model id" });
       }
+      // Levels differ by model: a new model starts on its default effort.
+      if (body.model !== AGENT_MODEL) AGENT_EFFORT = null;
       AGENT_MODEL = body.model;
     }
-    console.log(`  agent: ${AGENT ? `${AGENT.label}${AGENT_MODEL ? ` · ${AGENT_MODEL}` : ""}` : "none"} (switched)`);
+    if (body.effort !== undefined) {
+      if (body.effort !== null && !(typeof body.effort === "string" && EFFORT.test(body.effort))) {
+        return json(res, 400, { error: "effort must be null or an effort level" });
+      }
+      if (body.effort !== null && !AGENT?.efforts) {
+        return json(res, 400, { error: `${AGENT?.label ?? "this agent"} takes no effort level` });
+      }
+      AGENT_EFFORT = body.effort;
+    }
+    console.log(`  agent: ${AGENT ? `${AGENT.label}${AGENT_MODEL ? ` · ${AGENT_MODEL}` : ""}${AGENT_EFFORT ? ` · ${AGENT_EFFORT} effort` : ""}` : "none"} (switched)`);
     emit("agent.updated", {});
     return json(res, 200, agentState());
   }
@@ -1250,6 +1266,7 @@ const server = createServer(async (req, res) => {
         jobs: MAX_JOBS,
         pullRequests: OPEN_PR,
         model: AGENT_MODEL,
+        effort: AGENT_EFFORT,
         tools: AGENT?.id === "claude" ? AGENT_TOOLS : null,
         sandbox: AGENT?.id === "codex" ? AGENT_SANDBOX : null,
         queued: agentQueue.length,

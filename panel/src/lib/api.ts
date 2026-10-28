@@ -88,6 +88,8 @@ export const messageTime = (m: Message) => m.timestamp ?? m.createdAt;
 export type Run = {
   state: "running" | "review" | "done" | "failed" | "stopped" | "accepted" | "reverted";
   agent?: string;
+  model?: string | null;
+  effort?: string;
   startedAt?: string;
   finishedAt?: string;
   log?: string[];
@@ -125,6 +127,8 @@ export type Mark = {
   /** On a task made from a note: which note, and which of its messages. */
   sourceCommentId?: string;
   sourceMessageIds?: string[];
+  /** The agent the task asked for, chosen in the app (its agent pill). */
+  agent?: { id: string; model?: string; effort?: string };
   run?: Run;
 };
 
@@ -134,17 +138,36 @@ export async function getJson<T>(url: string, fallback: T): Promise<T> {
 }
 
 /** The server's /agent (docs/protocol.md in the package, "Agent"). */
-export type AgentChoice = { id: string; label: string; installed: boolean; version?: string; shell?: boolean };
+export type AgentChoice = {
+  id: string;
+  label: string;
+  installed: boolean;
+  /** Installed and signed in; false: its tasks would fail. */
+  connected?: boolean;
+  version?: string;
+  shell?: boolean;
+};
 export type AgentConfig = {
   enabled: boolean;
-  current: { id: string; label: string; model: string | null; shell?: boolean } | null;
+  /** The server runs each task on the agent it carries (the app's pill). */
+  perTask?: boolean;
+  /** The server's default: what a task without its own agent runs on. */
+  current: { id: string; label: string; model: string | null; effort?: string | null; shell?: boolean } | null;
   error: string | null;
   working: number;
   agents: AgentChoice[];
 };
-export type AgentModel = { id: string; label: string; description?: string; default?: boolean };
+export type AgentModel = {
+  id: string;
+  label: string;
+  description?: string;
+  default?: boolean;
+  /** Effort levels it takes, lowest first; [] none; absent: as the agent's. */
+  efforts?: string[];
+  defaultEffort?: string;
+};
 export type AgentModels =
-  | { ok: true; models: AgentModel[]; defaultLabel?: string; note?: string }
+  | { ok: true; models: AgentModel[]; defaultLabel?: string; note?: string; efforts?: string[]; defaultEffort?: string }
   | { ok: false; message: string };
 
 export async function getAgent(refresh = false): Promise<AgentConfig> {
@@ -154,12 +177,12 @@ export async function getAgent(refresh = false): Promise<AgentConfig> {
 }
 
 /** Slow: the server starts the agent's CLI to ask it. */
-export async function getAgentModels(agent: string): Promise<AgentModels> {
-  const r = await fetch(`${API}/agent/models?agent=${encodeURIComponent(agent)}`, { cache: "no-store" });
+export async function getAgentModels(agent: string, refresh = false): Promise<AgentModels> {
+  const r = await fetch(`${API}/agent/models?agent=${encodeURIComponent(agent)}${refresh ? "&refresh=1" : ""}`, { cache: "no-store" });
   return r.json().catch(() => ({ ok: false, message: `HTTP ${r.status}` }));
 }
 
-export async function setAgent(change: { agent?: string; model?: string | null }): Promise<AgentConfig> {
+export async function setAgent(change: { agent?: string; model?: string | null; effort?: string | null }): Promise<AgentConfig> {
   const r = await fetch(`${API}/agent`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
