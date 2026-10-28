@@ -28,23 +28,27 @@ const PORT = Number(process.argv[process.argv.indexOf("--port") + 1]) || Number(
 const PROTOCOL_VERSION = 1;
 
 /**
- * THE AGENT BRIDGE — off unless you ask for it.
+ * THE AGENT BRIDGE — on unless you turn it off.
  *
- *   node stub-server.mjs --agent
+ *   node stub-server.mjs                # Claude Code, else Codex, if installed
+ *   node stub-server.mjs --no-agent     # or AGENT=0: store tasks only
  *
- * Without this the stub only stores annotations, which answers "does the
- * protocol work" but not "does any of this actually help". With it, tapping
- * *Send to agent* hands the task to Claude Code running headless, and the
- * edit lands in the example app — Metro reloads it, and you watch the change
- * you asked for appear on the device that asked for it.
+ * Tapping *Send to agent* hands the task to an agent running headless, and
+ * the edit lands in the app — Metro reloads it, and you watch the change you
+ * asked for appear on the device that asked for it. That is what this
+ * sandbox is for, so it is the default: a devbox someone opened to try the
+ * overlay should not need to know a flag before Send does anything.
  *
- * It is opt-in because it WRITES TO YOUR FILES. Two limits keep it honest:
- * the agent's working directory is pinned to examples/expo, and it gets file
- * tools only — no shell. It is still an agent editing code unattended, which
- * is a thing to switch on deliberately rather than inherit from a default.
+ * It WRITES TO YOUR FILES. Two limits keep it honest: the agent's working
+ * directory is pinned to the app (AGENT_DIR), and it gets file tools only —
+ * no shell. With no agent installed, nothing runs and Send says how to
+ * install one, in the task's own thread.
  */
 const AGENT_FLAG = process.argv.find((a) => a === "--agent" || a.startsWith("--agent="));
-const AGENT_ENABLED = Boolean(AGENT_FLAG) || Boolean(process.env.AGENT);
+const AGENT_OFF =
+  process.argv.includes("--no-agent") ||
+  ["0", "false", "off", "no"].includes((process.env.AGENT ?? "").trim().toLowerCase());
+const AGENT_ENABLED = !AGENT_OFF;
 
 /**
  * THE AGENTS THIS BRIDGE KNOWS.
@@ -304,7 +308,8 @@ function resolveAgent() {
     return { agent: custom };
   }
   const asked = (AGENT_FLAG?.split("=")[1] || process.env.AGENT || "").toLowerCase();
-  if (asked && asked !== "1" && asked !== "true") {
+  // "Any agent" in every spelling of yes; anything else is a name.
+  if (asked && !["1", "true", "on", "yes"].includes(asked)) {
     const chosen = AGENTS[asked];
     if (!chosen) return { error: `unknown agent "${asked}" — expected ${Object.keys(AGENTS).join(" or ")}` };
     if (!installed(chosen.bin)) return { error: `${chosen.label} is not installed (\`${chosen.bin}\` not on PATH)` };
@@ -898,11 +903,14 @@ const server = createServer(async (req, res) => {
       // turn, and runAgent moves it working → sent. Marking it sent here
       // dropped it out of the pending list, so two of three queued tasks
       // vanished from the queue while they had not been touched.
-      if (a && !AGENT) db.annotations.set(id, { ...a, status: "sent", sentAt: now() });
+      // With the agent switched OFF, "sent" is the whole story. With it on
+      // but none installed, the task stays pending: nothing took it, and it
+      // should still be there to send once one is.
+      if (a && !AGENT_ENABLED) db.annotations.set(id, { ...a, status: "sent", sentAt: now() });
     }
     if (AGENT) for (const id of ids) enqueueAgent(id);
     else if (AGENT_ENABLED) for (const id of ids) addThreadMessage(id, "agent", AGENT_ERROR);
-    else console.log(`    → marked ${ids.length} task(s) sent (start with --agent to have one act on them)`);
+    else console.log(`    → marked ${ids.length} task(s) sent (the agent is off: AGENT=0 / --no-agent)`);
     emit("annotation.updated", {});
     return json(res, 200, { sent: ids.length });
   }
@@ -1113,8 +1121,8 @@ server.listen(PORT, process.env.HOST || undefined, () => {
     console.log(`  agent: ${AGENT.label} — worktree per task, ${MAX_JOBS} at a time${OPEN_PR ? ", opens PRs" : ""}`);
     console.log(`         edits land on annotate/* branches, NOT in your tree (so no hot reload)\n`);
   } else if (AGENT) console.log(`  agent: ${AGENT.label} — "Send to agent" edits ${AGENT_DIR}\n`);
-  else if (AGENT_ENABLED) console.log(`  agent: REQUESTED BUT UNAVAILABLE\n    ${AGENT_ERROR}\n`);
-  else console.log(`  agent: off — pass --agent to let Claude Code or Codex act on tasks\n`);
+  else if (AGENT_ENABLED) console.log(`  agent: NONE — Send will say this in the task too\n    ${AGENT_ERROR}\n`);
+  else console.log(`  agent: off (--no-agent / AGENT=0) — tasks are stored, nothing acts on them\n`);
   // Never let a widened sandbox be the quiet part: if someone handed this
   // agent a shell, say so every time it starts. Deliberately AFTER the
   // chain above rather than inside it — putting it in the middle detached

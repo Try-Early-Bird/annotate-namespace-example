@@ -69,12 +69,17 @@ safe to run every time.
 > through Namespace's authenticated URL, which is the real lock here. To use
 > your own, start it with `DEVBOX_PASSWORD=… npm run devbox`.
 
-### Let an agent make the change
+### The agent makes the change
 
-Tasks are only stored until you turn an agent on:
+**Send to agent** hands the task to Claude Code, or to Codex if Claude Code
+is not installed. The sandbox checks which is on the `PATH` when it starts
+and prints the one it found. With neither, tasks stay in the queue and
+Send replies in the task with how to install one.
 
 ```bash
-AGENT=1 npm run devbox        # Claude Code or Codex, whichever is installed
+npm run devbox                 # Claude Code, else Codex, whichever is installed
+AGENT=codex npm run devbox     # this one, even if the other is installed
+AGENT=0 npm run devbox         # no agent: tasks are only stored
 ```
 
 The agent edits the app in place, so the change hot reloads in the
