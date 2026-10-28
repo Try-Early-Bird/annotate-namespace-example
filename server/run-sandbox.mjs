@@ -631,6 +631,12 @@ const vnc = !vncUp ? null : shared
   : createVncBridge({ host: VNC_HOST, port: VNC_PORT, onLog: (m) => console.error(m) });
 
 front.on("upgrade", (req, socket, head) => {
+  // A socket that errors with no listener throws, and that took the whole
+  // front door down — the screen, the panel and the app's connection with
+  // it — whenever either end of a proxied WebSocket was reset (Metro's
+  // reload socket, a closed tab). An error on either end now just ends the
+  // pair.
+  socket.on("error", () => socket.destroy());
   if (refused(req, { writes: true })) { socket.destroy(); return; }
   if (req.url === "/websockify" || req.url.startsWith("/websockify?")) {
     if (!vnc) { socket.destroy(); return; }
@@ -647,6 +653,10 @@ front.on("upgrade", (req, socket, head) => {
       Object.entries(upRes.headers).map(([k, v]) => `${k}: ${v}`).join("\r\n") +
       `\r\n\r\n`);
     if (upHead?.length) socket.unshift(upHead);
+    upSocket.on("error", () => socket.destroy());
+    socket.on("error", () => upSocket.destroy());
+    socket.on("close", () => upSocket.destroy());
+    upSocket.on("close", () => socket.destroy());
     upSocket.pipe(socket).pipe(upSocket);
   });
   upstream.on("error", () => socket.destroy());
