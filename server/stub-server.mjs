@@ -17,8 +17,8 @@
  *   node stub-server.mjs [--port 4788]
  */
 import { createServer } from "node:http";
-import { existsSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -141,6 +141,35 @@ function detectAgents() {
  * Returns null when git is unavailable or this is not a repository, in
  * which case the bridge simply says nothing about files.
  */
+/**
+ * The changed files with a fingerprint of each one's contents, so a run can
+ * tell what IT edited: a file already modified before the run (by the run
+ * before it — a follow-up is exactly this case) counts when its contents
+ * change, not only when it newly appears in `git status`.
+ */
+function changedSnapshot() {
+  const root = repoRoot();
+  const snap = new Map();
+  for (const f of changedFiles() ?? []) {
+    let print = "gone";
+    try {
+      print = createHash("sha1").update(readFileSync(join(root ?? AGENT_DIR, f))).digest("hex");
+    } catch {}
+    snap.set(f, print);
+  }
+  return snap;
+}
+
+/**
+ * What changed between two snapshots: new to the list, different inside,
+ * or gone from it — a file put back to how it was committed is an edit too.
+ */
+function editedSince(before, after) {
+  const changed = [...after.keys()].filter((f) => before.get(f) !== after.get(f));
+  const restored = [...before.keys()].filter((f) => !after.has(f));
+  return [...changed, ...restored];
+}
+
 function changedFiles() {
   const probe = spawnSync("git", ["status", "--porcelain", "--", AGENT_DIR],
     { cwd: AGENT_DIR, encoding: "utf8", timeout: 10_000 });
@@ -374,14 +403,46 @@ function agentPrompt(a) {
   if (existsSync(ASSETS.dir) && assetsAt && !assetsAt.startsWith("..")) {
     lines.push("", `The app's own assets (images, fonts, media) are in ${assetsAt}/; use them by path.`);
   }
-  lines.push(
-    "",
-    "Edit the source to satisfy the request. Keep it minimal — change what was",
-    "asked and nothing else. Metro is watching, so the app reloads by itself.",
-    "Finish with one short sentence saying what you changed, then a last line",
-    "`Title: <3 to 6 words naming the change>` (e.g. `Title: Darker primary button`).",
-  );
+  lines.push("", ...FINISH);
   return lines.join("\n");
+}
+
+/** How every run's prompt ends: keep it small, say what changed, name it. */
+const FINISH = [
+  "Edit the source to satisfy the request. Keep it minimal — change what was",
+  "asked and nothing else. Metro is watching, so the app reloads by itself.",
+  "Finish with one short sentence saying what you changed, then a last line",
+  "`Title: <3 to 6 words naming the change>` (e.g. `Title: Darker primary button`).",
+];
+
+/**
+ * A RESUMED run's prompt: only what is new. The session already holds the
+ * request, the files it read and what it did; what it lacks is what the
+ * person said since — the user messages after its last reply.
+ */
+function followUpPrompt(a) {
+  const thread = (a.thread ?? []).filter((m) => m.content);
+  const lastAgent = thread.map((m) => m.role).lastIndexOf("agent");
+  const said = thread.slice(lastAgent + 1).filter((m) => m.role === "user").map((m) => m.content);
+  return [
+    said.length ? "They replied about the change you just made:" : "They sent this task to you again.",
+    ...said.map((c) => `  ${c}`),
+    "",
+    ...FINISH,
+  ].join("\n");
+}
+
+/**
+ * Continue the agent's own session, or start one that can be continued
+ * (agents.mjs, SESSIONS). Only in place: a worktree is removed after its
+ * run, and a session belongs to the directory it ran in. Only on the same
+ * agent and model — a switch is a fresh start by definition.
+ */
+function sessionFor(annotation, agent, model, inWorktree) {
+  if (inWorktree || !agent.resumable) return null;
+  const prev = annotation.agentSession;
+  if (prev?.id && prev.agent === agent.id && (prev.model ?? null) === (model ?? null)) return { mode: "resume", id: prev.id };
+  return { mode: "start", id: agent.resumable === "own-id" ? randomUUID() : null };
 }
 
 /** Append a message to an annotation's thread and tell the app to re-read. */
@@ -549,17 +610,21 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
     return done?.();
   }
   const workDir = wt ? wt.workDir : AGENT_DIR;
-  const args = agent.args(agentPrompt(annotation), workDir, model, agent.extra, effort);
+  const session = sessionFor(annotation, agent, model, Boolean(wt));
+  const resumed = session?.mode === "resume";
+  const prompt = resumed ? followUpPrompt(annotation) : agentPrompt(annotation);
+  const args = agent.args(prompt, workDir, model, agent.extra, effort, session);
   // Only meaningful in place: in a worktree the edits are committed to a
   // branch and reported from there, and nothing lands in your working tree.
-  const before = wt ? null : new Set(changedFiles() ?? []);
+  const before = wt ? null : changedSnapshot();
   const on = [model, effort && `${effort} effort`].filter(Boolean).join(", ");
-  console.log(`    → ${agent.label}${on ? ` (${on})` : ""} working on ${id.slice(0, 8)} in ${wt ? wt.branch : AGENT_DIR}`);
+  console.log(`    → ${agent.label}${on ? ` (${on})` : ""} ${resumed ? "continuing its session on" : "working on"} ${id.slice(0, 8)} in ${wt ? wt.branch : AGENT_DIR}`);
   // The protocol status the overlay's banner reads. Optional and additive:
   // a server that does not run agents never sets it and no banner appears.
   annotation.status = "working";
   annotation.run = { state: "running", agent: agent.label, model, ...(effort ? { effort } : {}), startedAt: now(), log: [], files: [] };
   const record = startRunRecord(annotation, agent, model, effort);
+  if (resumed) record.resumed = true;
   addThreadMessage(id, "agent", `${agent.label} is working on it…`);
   // In place, the screen IS the before picture; in a worktree nothing on
   // the device changes, so there is no before/after to show.
@@ -607,6 +672,24 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
     delete annotation.progress;
     stdout = out.value; stderr = errs.value;
     const err = failedToStart || timedOut || stopped || code !== 0;
+    // A session that could not be continued (cleared, expired, made on
+    // another machine): say so in the record and start again from the
+    // thread, rather than failing the follow-up.
+    if (err && resumed && !timedOut && !stopped) {
+      console.log(`    ↺ ${agent.label} could not continue its session on ${id.slice(0, 8)}; starting fresh`);
+      delete annotation.agentSession;
+      Object.assign(record, {
+        finishedAt: now(),
+        outcome: "failed",
+        error: "Could not continue the earlier session, so it started again from the thread.",
+      });
+      // Its "working on it…" bubble goes; the fresh run adds its own.
+      if (annotation.thread?.length) annotation.thread = annotation.thread.slice(0, -1);
+      return runAgent(id, done, origin);
+    }
+    // Keep the session for the next follow-up on this task.
+    const sessionId = !err && session ? session.id ?? agent.sessionFrom?.(String(stderr)) : null;
+    if (sessionId) annotation.agentSession = { agent: agent.id, model: model ?? null, id: sessionId };
     let reply;
     let files = [];
     let title;
@@ -672,7 +755,7 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
           }
         }
       } else {
-        const touched = (changedFiles() ?? []).filter((f) => !before.has(f));
+        const touched = editedSince(before, changedSnapshot());
         if (touched.length) {
           files = numstat([], repoRoot() ?? AGENT_DIR, touched);
           console.log(`      edited: ${touched.join(", ")}`);
@@ -849,7 +932,7 @@ function dropScreenshots(references, ids = []) {
  */
 const SERVER_OWNED = [
   "sessionId", "createdAt", "updatedAt", "sentAt", "status", "thread", "run", "progress",
-  "reopenedAt", "reopenCount", "placeholderId", "refinedDuringRun", "resolvedAt", "author", "runs",
+  "reopenedAt", "reopenCount", "placeholderId", "refinedDuringRun", "resolvedAt", "author", "runs", "agentSession",
 ];
 function clientFields(body) {
   const out = { ...body };

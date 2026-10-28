@@ -18,6 +18,15 @@
  * where it has none, by the credentials it reads. /agent reports it as
  * `connected`, and the app offers only connected agents.
  *
+ * SESSIONS, FOR FOLLOW-UPS. Claude Code and Codex keep their sessions, so a
+ * follow-up on the same task can CONTINUE the run before it — the files it
+ * read, what it found, what it tried — instead of starting over from the
+ * thread's text. `session` in `args` is { mode: "start" | "resume", id }:
+ * Claude takes the id up front (--session-id) and resumes it (--resume);
+ * Codex makes its own and prints it (`sessionFrom` reads it back), and
+ * resumes with `codex exec resume <id>`. The others have no `resumable`,
+ * and every run of theirs starts fresh, as before.
+ *
  * SHELL ACCESS DIFFERS. Claude Code and Codex run with file tools and no
  * shell by default (`AGENT_TOOLS`, `AGENT_SANDBOX`). The other four have no
  * file-only mode in headless use: auto-approving their edits auto-approves
@@ -86,14 +95,18 @@ export const PROVIDERS = {
     bins: ["claude"],
     // STREAMED, so the steps show while it works: one JSON event per line,
     // tool calls among them, the answer last.
-    args: (prompt, dir, model, extra, effort) => [
+    args: (prompt, dir, model, extra, effort, session) => [
       "-p", prompt,
       "--output-format", "stream-json", "--verbose",
       "--allowedTools", ...AGENT_TOOLS,
       "--permission-mode", "acceptEdits",
       ...(model ? ["--model", model] : []),
       ...(effort ? ["--effort", effort] : []),
+      ...(session?.mode === "start" ? ["--session-id", session.id] : []),
+      ...(session?.mode === "resume" ? ["--resume", session.id] : []),
     ],
+    // The server picks the id (a UUID) and hands it over at the start.
+    resumable: "own-id",
     // `claude --help`: --effort <level>.
     efforts: ["low", "medium", "high", "xhigh", "max"],
     read: (stdout) => replyFrom(stdout, () => null),
@@ -110,17 +123,31 @@ export const PROVIDERS = {
   codex: {
     label: "Codex",
     bins: ["codex"],
-    args: (prompt, dir, model, extra, effort) => [
-      "exec", prompt,
-      "--sandbox", AGENT_SANDBOX,
-      "-C", dir,
-      // Parallel runs share session-restore files without this, and a task
-      // per annotation is exactly the parallel case.
-      "--ephemeral",
-      "--skip-git-repo-check",
-      ...(model ? ["-m", model] : []),
-      ...(effort ? ["-c", `model_reasoning_effort="${effort}"`] : []),
-    ],
+    args: (prompt, dir, model, extra, effort, session) => session?.mode === "resume"
+      // `exec resume` takes neither --sandbox nor -C: the sandbox goes in as
+      // config, and the directory is the process's own (the server's cwd).
+      ? [
+        "exec", "resume", session.id, prompt,
+        "-c", `sandbox_mode="${AGENT_SANDBOX}"`,
+        "--skip-git-repo-check",
+        ...(model ? ["-m", model] : []),
+        ...(effort ? ["-c", `model_reasoning_effort="${effort}"`] : []),
+      ]
+      : [
+        "exec", prompt,
+        "--sandbox", AGENT_SANDBOX,
+        "-C", dir,
+        // Parallel runs share session-restore files without this, and a
+        // task per annotation is exactly the parallel case — so only a run
+        // whose session will be resumed keeps one.
+        ...(session?.mode === "start" ? [] : ["--ephemeral"]),
+        "--skip-git-repo-check",
+        ...(model ? ["-m", model] : []),
+        ...(effort ? ["-c", `model_reasoning_effort="${effort}"`] : []),
+      ],
+    // Codex makes its own id and prints it at the start: "session id: <uuid>".
+    resumable: "printed",
+    sessionFrom: (stderr) => /session id:\s*([0-9a-f-]{36})/i.exec(stderr)?.[1] ?? null,
     // Its model list says which efforts each model takes (codexModels);
     // these are the ones every current model does.
     efforts: ["low", "medium", "high", "xhigh"],
