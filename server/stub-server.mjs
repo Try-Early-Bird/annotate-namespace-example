@@ -23,6 +23,9 @@ import { readFile, rm } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import {
+  AGENT_SANDBOX, AGENT_TOOLS, PROVIDERS, PROVIDER_ORDER, customProvider, detectProviders, providerModels,
+} from "./agents.mjs";
 
 const PORT = Number(process.argv[process.argv.indexOf("--port") + 1]) || Number(process.env.PORT) || 4788;
 const PROTOCOL_VERSION = 1;
@@ -30,8 +33,14 @@ const PROTOCOL_VERSION = 1;
 /**
  * THE AGENT BRIDGE — on unless you turn it off.
  *
- *   node stub-server.mjs                # Claude Code, else Codex, if installed
+ *   node stub-server.mjs                # the first installed: Claude Code,
+ *                                       # Codex, Cursor, OpenCode, Gemini, Grok
+ *   AGENT=grok node stub-server.mjs     # start with this one
  *   node stub-server.mjs --no-agent     # or AGENT=0: store tasks only
+ *
+ * Which agent and which model can also be changed while it runs, from the
+ * app's Settings → Agent or the panel's Agent pill (`PATCH /agent`). The
+ * agents themselves are in ./agents.mjs.
  *
  * Tapping *Send to agent* hands the task to an agent running headless, and
  * the edit lands in the app — Metro reloads it, and you watch the change you
@@ -51,96 +60,49 @@ const AGENT_OFF =
 const AGENT_ENABLED = !AGENT_OFF;
 
 /**
- * THE AGENTS THIS BRIDGE KNOWS.
+ * THE CURRENT AGENT — mutable, because /agent switches it.
  *
- * Two CLIs, because an example nobody else can run is a screenshot. Each
- * entry is the whole difference between them: how to ask for one headless
- * edit, and how to read the answer back out.
- *
- * Both default to FILE ACCESS AND NO SHELL: Claude by withholding Bash from
- * `--allowedTools`, Codex by its `workspace-write` sandbox. That is the
- * right default for a DEMO — an agent reachable from a text field on a
- * phone, running unattended on whoever's laptop is hosting this, has no
- * business running arbitrary commands.
- *
- * IT IS A DEFAULT, NOT A POSITION. An adopter running this inside their own
- * platform knows things this example cannot: whose repository it is, what
- * the agent is allowed to touch, whether it may push. `AGENT_TOOLS` and
- * `AGENT_SANDBOX` hand that decision back:
- *
- *   AGENT_TOOLS="Read Edit Write Glob Grep Bash"   # Claude: let it run git
- *   AGENT_SANDBOX=danger-full-access               # Codex: drop the sandbox
- *
- * Widen those and the agent can commit, push and open its own pull request
- * — which is a real thing to want, and a real thing to mean on purpose.
- * The `--pr` path below exists so you do NOT have to widen them just to get
- * a PR: the server does the push with a known, narrow command instead.
+ * `AGENT` is the provider in use with its binary resolved (or null), and
+ * `AGENT_MODEL` the model it is asked for (null: the CLI's own default).
+ * A run takes both at its start, so switching mid-run changes the NEXT task.
  */
-const AGENT_TOOLS = (process.env.AGENT_TOOLS ?? "Read Edit Write Glob Grep").split(/\s+/).filter(Boolean);
-const AGENT_SANDBOX = process.env.AGENT_SANDBOX ?? "workspace-write";
-const AGENTS = {
-  claude: {
-    bin: "claude",
-    label: "Claude Code",
-    // STREAMED, so the panel can show what it is doing while it does it:
-    // one JSON event per line, tool calls among them, the answer last.
-    args: (prompt, dir, model) => [
-      "-p", prompt,
-      "--output-format", "stream-json", "--verbose",
-      "--allowedTools", ...AGENT_TOOLS,
-      "--permission-mode", "acceptEdits",
-      ...(model ? ["--model", model] : []),
-    ],
-    // The `result` event carries the reply. Fall back to raw text if the
-    // shape ever changes, rather than reporting an empty answer.
-    read: (stdout) => {
-      for (const line of stdout.trim().split("\n").reverse()) {
-        try { const j = JSON.parse(line); if (j.type === "result") return String(j.result ?? ""); } catch {}
-      }
-      return stdout;
-    },
-    progress: (line) => {
-      let event;
-      try { event = JSON.parse(line); } catch { return null; }
-      if (event.type !== "assistant") return null;
-      const uses = (event.message?.content ?? []).filter((c) => c.type === "tool_use");
-      return uses.map((u) => describeTool(u.name, u.input ?? {})).filter(Boolean);
-    },
-  },
-  codex: {
-    bin: "codex",
-    label: "Codex",
-    args: (prompt, dir, model) => [
-      "exec", prompt,
-      "--sandbox", AGENT_SANDBOX,
-      "-C", dir,
-      // Parallel runs share session-restore files without this, and a task
-      // per annotation is exactly the parallel case.
-      "--ephemeral",
-      "--skip-git-repo-check",
-      ...(model ? ["-m", model] : []),
-    ],
-    // codex exec streams progress to stderr and prints the final message to
-    // stdout, so stdout already IS the answer.
-    read: (stdout) => stdout,
-    progressFrom: "stderr",
-    progress: (line) => line.trim() && !line.startsWith("[") ? [line.trim().slice(0, 120)] : null,
-  },
-};
+const CUSTOM = customProvider();
+let detected = {};
+let AGENT = null;
+let AGENT_MODEL = process.env.AGENT_MODEL || null;
+let AGENT_ERROR = null;
 
-/** "Read app/settings.tsx" → "read settings.tsx": one short line per step. */
-function describeTool(name, input) {
-  const file = input.file_path ?? input.path ?? input.notebook_path;
-  const base = file ? String(file).split("/").pop() : null;
-  switch (name) {
-    case "Read": return base && `read ${base}`;
-    case "Edit": case "MultiEdit": case "Write": return base && `editing ${base}`;
-    case "Grep": return `search "${String(input.pattern ?? "").slice(0, 40)}"`;
-    case "Glob": return `find ${String(input.pattern ?? "").slice(0, 40)}`;
-    case "Bash": return `run ${String(input.command ?? "").slice(0, 60)}`;
-    default: return name ? name.toLowerCase() : null;
-  }
+function useAgent(id) {
+  const provider = id === "custom" ? CUSTOM : PROVIDERS[id];
+  const found = detected[id];
+  AGENT = provider && found?.installed ? { id, ...provider, bin: found.bin, extra: found.extra ?? {} } : null;
 }
+
+/** Look for the CLIs again and settle on one: AGENT_CMD, the named one, else the first installed. */
+function detectAgents() {
+  detected = detectProviders(CUSTOM ? { ...PROVIDERS, custom: CUSTOM } : PROVIDERS);
+  if (!AGENT_ENABLED) return;
+  const asked = (AGENT_FLAG?.split("=")[1] || process.env.AGENT || "").trim().toLowerCase();
+  const named = asked && !["1", "true", "on", "yes"].includes(asked) ? asked : null;
+  const keep = AGENT && detected[AGENT.id]?.installed ? AGENT.id : null;
+  // A NAMED agent that is missing is not swapped for another: whoever set
+  // AGENT=codex wants Codex, and quietly running something else would make
+  // the result a lie. They get the error, and can pick one from the status.
+  const pick = CUSTOM ? "custom" : keep
+    ?? (named ? (detected[named]?.installed ? named : null) : PROVIDER_ORDER.find((id) => detected[id]?.installed));
+  if (pick) useAgent(pick);
+  else AGENT = null;
+  AGENT_ERROR = AGENT ? null
+    : CUSTOM ? `AGENT_CMD names "${CUSTOM.bins[0]}", which is not on PATH`
+    : named && !PROVIDERS[named] ? `unknown agent "${named}" — expected ${PROVIDER_ORDER.join(", ")}`
+    : named ? `${PROVIDERS[named].label} is not installed (\`${PROVIDERS[named].bins[0]}\` not on PATH)`
+    : `no supported agent found. Install one:\n` +
+      `    Claude Code  npm i -g @anthropic-ai/claude-code   (then: claude)\n` +
+      `    Codex        npm i -g @openai/codex               (then: codex)\n` +
+      `    or Cursor, OpenCode, Gemini CLI or Grok\n` +
+      `  ...or point AGENT_CMD at your own: AGENT_CMD="my-agent {prompt}"`;
+}
+
 
 /**
  * What the agent changed, as git sees it.
@@ -243,88 +205,6 @@ function openPullRequest(wt, annotation) {
   return (/https:\/\/\S+/.exec(r.stdout ?? "") ?? [])[0] ?? null;
 }
 
-/**
- * ANY OTHER AGENT — `AGENT_CMD`.
- *
- * The two above are conveniences, not the supported set. Anything that can
- * be run once with a prompt and print what it did works here:
- *
- *   AGENT_CMD="aider --yes --message {prompt}"
- *   AGENT_CMD="my-agent.sh {prompt} --dir {dir}"
- *   AGENT_CMD="some-cli --task"        # no {prompt} → appended as the last argument
- *
- * `{prompt}` and `{dir}` are substituted; whatever the command prints on
- * stdout becomes the reply in the app. Arguments split on whitespace, so a
- * wrapper script is the answer for anything needing real quoting — which is
- * also where per-agent flags belong, rather than in this file.
- *
- * Nothing about the sandbox is assumed for a custom command: the server
- * cannot know what flags yours takes, so its permissions are yours to set
- * inside it. AGENT_TOOLS and AGENT_SANDBOX apply to the two named agents
- * only, and the startup banner says a custom command is in use so that is
- * never a silent difference.
- */
-function customAgent() {
-  const template = (process.env.AGENT_CMD ?? "").trim();
-  if (!template) return null;
-  const parts = template.split(/\s+/);
-  return {
-    bin: parts[0],
-    label: `custom (${parts[0]})`,
-    custom: true,
-    args: (prompt, dir) => {
-      const rest = parts.slice(1);
-      const substituted = rest.map((a) => a.replace(/\{dir\}/g, dir).replace(/\{prompt\}/g, prompt));
-      // A template with no {prompt} still has to receive one, or the agent
-      // is asked to do nothing at all.
-      return rest.some((a) => a.includes("{prompt}")) ? substituted : [...substituted, prompt];
-    },
-    read: (stdout) => stdout,
-    // Your command's stderr, line by line, is the panel's progress log.
-    progressFrom: "stderr",
-    progress: (line) => (line.trim() ? [line.trim().slice(0, 120)] : null),
-  };
-}
-
-/** Is this CLI actually installed? Cheaper to ask than to fail mid-task. */
-function installed(bin) {
-  const probe = spawnSync(bin, ["--version"], { stdio: "ignore", timeout: 10_000 });
-  return !probe.error && probe.status === 0;
-}
-
-/**
- * Which agent to use: whatever was named, else the first one present.
- *
- * Naming one that is not installed is an error rather than a silent
- * fallback — someone who typed `--agent=codex` wants Codex, and quietly
- * running something else would make the result a lie.
- */
-function resolveAgent() {
-  // An explicit command wins over everything: someone who set it has said
-  // exactly what they want run.
-  const custom = customAgent();
-  if (custom) {
-    if (!installed(custom.bin)) return { error: `AGENT_CMD names "${custom.bin}", which is not on PATH` };
-    return { agent: custom };
-  }
-  const asked = (AGENT_FLAG?.split("=")[1] || process.env.AGENT || "").toLowerCase();
-  // "Any agent" in every spelling of yes; anything else is a name.
-  if (asked && !["1", "true", "on", "yes"].includes(asked)) {
-    const chosen = AGENTS[asked];
-    if (!chosen) return { error: `unknown agent "${asked}" — expected ${Object.keys(AGENTS).join(" or ")}` };
-    if (!installed(chosen.bin)) return { error: `${chosen.label} is not installed (\`${chosen.bin}\` not on PATH)` };
-    return { agent: chosen };
-  }
-  for (const candidate of Object.values(AGENTS)) {
-    if (installed(candidate.bin)) return { agent: candidate };
-  }
-  return {
-    error: `no supported agent found. Install one:\n` +
-      `    Claude Code  npm i -g @anthropic-ai/claude-code   (then: claude)\n` +
-      `    Codex        npm i -g @openai/codex               (then: codex)\n` +
-      `  ...or point AGENT_CMD at your own: AGENT_CMD="my-agent {prompt}"`,
-  };
-}
 
 /**
  * THE APP'S OWN ROOT IS THE DEFAULT ON PURPOSE — do not point it elsewhere to be
@@ -340,8 +220,6 @@ function resolveAgent() {
 const AGENT_DIR = process.env.AGENT_DIR
   ? resolve(process.env.AGENT_DIR)
   : resolve(dirname(fileURLToPath(import.meta.url)), "..");
-/** Unset means "whatever that CLI is already configured to use". */
-const AGENT_MODEL = process.env.AGENT_MODEL || null;
 const AGENT_TIMEOUT_MS = Number(process.env.AGENT_TIMEOUT_MS) || 180_000;
 
 /**
@@ -551,7 +429,10 @@ function setRun(annotation, patch) {
 
 function runAgent(id, done, origin = `http://localhost:${PORT}`) {
   const annotation = db.annotations.get(id);
-  if (!annotation || !AGENT) return done?.();
+  // This run's agent and model, taken now: switching them in /agent while
+  // it works changes the NEXT task, not this one half-way through.
+  const agent = AGENT, model = AGENT_MODEL;
+  if (!annotation || !agent) return done?.();
 
   const wt = WORKTREE ? makeWorktree(id) : null;
   if (WORKTREE && !wt) {
@@ -561,16 +442,16 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
     return done?.();
   }
   const workDir = wt ? wt.workDir : AGENT_DIR;
-  const args = AGENT.args(agentPrompt(annotation), workDir, AGENT_MODEL);
+  const args = agent.args(agentPrompt(annotation), workDir, model, agent.extra);
   // Only meaningful in place: in a worktree the edits are committed to a
   // branch and reported from there, and nothing lands in your working tree.
   const before = wt ? null : new Set(changedFiles() ?? []);
-  console.log(`    → ${AGENT.label} working on ${id.slice(0, 8)} in ${wt ? wt.branch : AGENT_DIR}`);
+  console.log(`    → ${agent.label} working on ${id.slice(0, 8)} in ${wt ? wt.branch : AGENT_DIR}`);
   // The protocol status the overlay's banner reads. Optional and additive:
   // a server that does not run agents never sets it and no banner appears.
   annotation.status = "working";
-  annotation.run = { state: "running", agent: AGENT.label, startedAt: now(), log: [], files: [] };
-  addThreadMessage(id, "agent", `${AGENT.label} is working on it…`);
+  annotation.run = { state: "running", agent: agent.label, model, startedAt: now(), log: [], files: [] };
+  addThreadMessage(id, "agent", `${agent.label} is working on it…`);
   // In place, the screen IS the before picture; in a worktree nothing on
   // the device changes, so there is no before/after to show.
   if (!wt) simulatorShot().then((shot) => shot && setRun(annotation, { before: shot }));
@@ -579,7 +460,7 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
   // what lets the panel show the agent's steps while it is still working.
   // stdin is closed from the start: `codex exec` appends piped stdin to its
   // prompt, and an open-but-silent pipe left it waiting until the timeout.
-  const child = spawn(AGENT.bin, args, { cwd: workDir, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(agent.bin, args, { cwd: workDir, stdio: ["ignore", "pipe", "pipe"] });
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
   runs.set(id, child);
@@ -598,7 +479,7 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
     };
   };
   const step = (line) => {
-    const said = AGENT.progress?.(line);
+    const said = agent.progress?.(line);
     if (!said?.length) return;
     // `progress` is the protocol's one-line "doing this now", which the
     // overlay shows under its banner; the panel reads the whole log.
@@ -607,8 +488,8 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
     setRun(annotation, { log: [...(annotation.run?.log ?? []), ...said].slice(-40) });
   };
   const out = { value: "" }, errs = { value: "" };
-  child.stdout.on("data", lines(out, (AGENT.progressFrom ?? "stdout") === "stdout" ? step : () => {}));
-  child.stderr.on("data", lines(errs, AGENT.progressFrom === "stderr" ? step : () => {}));
+  child.stdout.on("data", lines(out, (agent.progressFrom ?? "stdout") === "stdout" ? step : () => {}));
+  child.stderr.on("data", lines(errs, agent.progressFrom === "stderr" ? step : () => {}));
   child.on("error", (err) => { failedToStart = err; });
 
   child.on("close", async (code) => {
@@ -628,11 +509,11 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
           ? `Timed out after ${AGENT_TIMEOUT_MS / 1000}s.`
           // The LAST thing it said: agents narrate their steps on stderr
           // and give the reason they stopped at the end.
-          : `${AGENT.label} could not run: ${String(failedToStart?.message || stderr || `exit ${code}`).trim().split("\n").pop()}`;
-      console.log(`    ✗ ${AGENT.label} ${stopped ? "stopped" : "failed"} on ${id.slice(0, 8)}: ${reply}`);
+          : `${agent.label} could not run: ${String(failedToStart?.message || stderr || `exit ${code}`).trim().split("\n").pop()}`;
+      console.log(`    ✗ ${agent.label} ${stopped ? "stopped" : "failed"} on ${id.slice(0, 8)}: ${reply}`);
     } else {
-      reply = AGENT.read(stdout).trim() || "Done.";
-      console.log(`    ✓ ${AGENT.label} finished ${id.slice(0, 8)}`);
+      reply = agent.read(stdout).trim() || "Done.";
+      console.log(`    ✓ ${agent.label} finished ${id.slice(0, 8)}`);
       if (wt) {
         // The work is on a branch, not in front of you — so the reply has
         // to carry everything you would otherwise see by looking.
@@ -795,9 +676,39 @@ function storeScreenshot(buf, contentType, origin) {
   return { type: "screenshot", url: `${origin}/screenshots/${id}`, name: "screenshot.png" };
 }
 
-// Resolved once: probing PATH per annotation would be waste, and an agent
-// appearing halfway through a session is not a case worth supporting.
-const { agent: AGENT, error: AGENT_ERROR } = AGENT_ENABLED ? resolveAgent() : {};
+/** A model id as the CLIs write them: "sonnet", "gpt-5.6-sol", "anthropic/claude-x:1". */
+const MODEL_ID = /^[A-Za-z0-9][\w.\/:\[\]-]{0,199}$/;
+
+/** `GET /agent`: the current agent and model, and every agent this server knows. */
+function agentState() {
+  const ids = [...PROVIDER_ORDER, ...(CUSTOM ? ["custom"] : [])];
+  return {
+    enabled: AGENT_ENABLED,
+    current: AGENT
+      ? { id: AGENT.id, label: AGENT.label, model: AGENT_MODEL, shell: Boolean(AGENT.shell) }
+      : null,
+    // The first line only: the rest is install instructions for a terminal.
+    error: AGENT_ENABLED && !AGENT ? (AGENT_ERROR ?? "").split("\n")[0] : null,
+    working: agentsInFlight,
+    queued: agentQueue.length,
+    agents: ids.map((id) => {
+      const p = id === "custom" ? CUSTOM : PROVIDERS[id];
+      const found = detected[id] ?? {};
+      return {
+        id,
+        label: p.label,
+        installed: Boolean(found.installed),
+        ...(found.version ? { version: found.version } : {}),
+        shell: Boolean(p.shell),
+      };
+    }),
+  };
+}
+
+// Detected at startup, and again on `GET /agent?refresh=1` so an agent
+// installed while the sandbox runs can be picked up. Never per task:
+// probing PATH per annotation would be waste.
+detectAgents();
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? `localhost:${PORT}`}`);
@@ -1058,6 +969,49 @@ const server = createServer(async (req, res) => {
     }
   }
 
+  // ── The agent: which one, which model, and whether it is there ───────
+  // Optional protocol routes (docs/protocol.md, "Agent"): the app's
+  // Settings → Agent and the panel's Agent pill both read and switch it.
+  // Server-wide, like the agent itself. Whoever can reach this server can
+  // switch it — which on a devbox is whoever is past its auth gate.
+  if (path === "/agent" && req.method === "GET") {
+    if (url.searchParams.get("refresh") === "1") detectAgents();
+    return json(res, 200, agentState());
+  }
+  if (path === "/agent/models" && req.method === "GET") {
+    const id = url.searchParams.get("agent") ?? AGENT?.id ?? "";
+    const provider = id === "custom" ? CUSTOM : PROVIDERS[id];
+    const found = detected[id];
+    if (!provider) return json(res, 404, { ok: false, message: `unknown agent "${id}"` });
+    if (!found?.installed) return json(res, 200, { ok: false, message: `${provider.label} is not installed.` });
+    return json(res, 200, await providerModels(id, provider, found.bin));
+  }
+  if (path === "/agent" && req.method === "PATCH") {
+    if (!AGENT_ENABLED) return json(res, 409, { error: "the agent is off on this server (AGENT=0 / --no-agent)" });
+    const body = parseJson(await readBody(req));
+    if (!body || typeof body !== "object") return json(res, 400, { error: "invalid JSON" });
+    if (body.agent !== undefined) {
+      const known = body.agent === "custom" ? CUSTOM : PROVIDERS[body.agent];
+      if (!known) return json(res, 400, { error: `unknown agent "${String(body.agent).slice(0, 40)}"` });
+      if (!detected[body.agent]?.installed) return json(res, 400, { error: `${known.label} is not installed` });
+      // A model belongs to an agent: a new agent starts on its own default.
+      if (AGENT?.id !== body.agent) AGENT_MODEL = null;
+      useAgent(body.agent);
+      AGENT_ERROR = null;
+    }
+    if (body.model !== undefined) {
+      // Passed as one argv entry, never through a shell — the pattern only
+      // keeps it to something that looks like a model id.
+      if (body.model !== null && !(typeof body.model === "string" && MODEL_ID.test(body.model))) {
+        return json(res, 400, { error: "model must be null or a model id" });
+      }
+      AGENT_MODEL = body.model;
+    }
+    console.log(`  agent: ${AGENT ? `${AGENT.label}${AGENT_MODEL ? ` · ${AGENT_MODEL}` : ""}` : "none"} (switched)`);
+    emit("agent.updated", {});
+    return json(res, 200, agentState());
+  }
+
   // ── Not protocol: what the sandbox panel shows about this server ──────
   // The overlay never calls this. It answers "where do marks go, and is
   // anything going to act on them", which the protocol has no route for.
@@ -1075,15 +1029,17 @@ const server = createServer(async (req, res) => {
       },
       agent: {
         enabled: AGENT_ENABLED,
+        id: AGENT?.id ?? null,
         name: AGENT?.label ?? null,
+        shell: AGENT ? Boolean(AGENT.shell) : null,
         error: AGENT_ENABLED && !AGENT ? AGENT_ERROR : null,
         mode: WORKTREE ? "worktree" : "in-tree",
         dir: WORKTREE ? null : AGENT_DIR,
         jobs: MAX_JOBS,
         pullRequests: OPEN_PR,
         model: AGENT_MODEL,
-        tools: AGENT?.bin === "claude" ? AGENT_TOOLS : null,
-        sandbox: AGENT?.bin === "codex" ? AGENT_SANDBOX : null,
+        tools: AGENT?.id === "claude" ? AGENT_TOOLS : null,
+        sandbox: AGENT?.id === "codex" ? AGENT_SANDBOX : null,
         queued: agentQueue.length,
         working: agentsInFlight,
       },
@@ -1117,10 +1073,15 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, process.env.HOST || undefined, () => {
   console.log(`\nAnnotate Protocol v1 stub — http://localhost:${PORT}`);
   console.log(`  in memory; restart to clear`);
+  const named = AGENT ? `${AGENT.label}${AGENT_MODEL ? ` · ${AGENT_MODEL}` : ""}` : "";
+  const others = PROVIDER_ORDER.filter((id) => detected[id]?.installed && id !== AGENT?.id).map((id) => PROVIDERS[id].label);
   if (AGENT && WORKTREE) {
-    console.log(`  agent: ${AGENT.label} — worktree per task, ${MAX_JOBS} at a time${OPEN_PR ? ", opens PRs" : ""}`);
-    console.log(`         edits land on annotate/* branches, NOT in your tree (so no hot reload)\n`);
-  } else if (AGENT) console.log(`  agent: ${AGENT.label} — "Send to agent" edits ${AGENT_DIR}\n`);
+    console.log(`  agent: ${named} — worktree per task, ${MAX_JOBS} at a time${OPEN_PR ? ", opens PRs" : ""}`);
+    console.log(`         edits land on annotate/* branches, NOT in your tree (so no hot reload)`);
+  } else if (AGENT) console.log(`  agent: ${named} — "Send to agent" edits ${AGENT_DIR}`);
+  if (AGENT) {
+    console.log(`         also installed: ${others.length ? others.join(", ") : "nothing else"} — switch in Settings → Agent\n`);
+  }
   else if (AGENT_ENABLED) console.log(`  agent: NONE — Send will say this in the task too\n    ${AGENT_ERROR}\n`);
   else console.log(`  agent: off (--no-agent / AGENT=0) — tasks are stored, nothing acts on them\n`);
   // Never let a widened sandbox be the quiet part: if someone handed this
@@ -1130,10 +1091,13 @@ server.listen(PORT, process.env.HOST || undefined, () => {
   if (AGENT?.custom) {
     console.log(`  ⚠ custom agent command — its permissions are whatever you gave it\n`);
   }
-  if (AGENT?.bin === "claude" && AGENT_TOOLS.includes("Bash")) {
+  if (AGENT?.shell && !AGENT.custom) {
+    console.log(`  ⚠ ${AGENT.label} runs with its edits auto-approved, which includes shell commands\n`);
+  }
+  if (AGENT?.id === "claude" && AGENT_TOOLS.includes("Bash")) {
     console.log(`  ⚠ agent has Bash — it can run commands, including git push\n`);
   }
-  if (AGENT?.bin === "codex" && AGENT_SANDBOX !== "workspace-write") {
+  if (AGENT?.id === "codex" && AGENT_SANDBOX !== "workspace-write") {
     console.log(`  ⚠ agent sandbox is "${AGENT_SANDBOX}" — wider than the default\n`);
   }
   // PUBLIC_ORIGIN when something reachable is known, because in a sandbox
