@@ -595,6 +595,10 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
   const step = (line) => {
     const said = AGENT.progress?.(line);
     if (!said?.length) return;
+    // `progress` is the protocol's one-line "doing this now", which the
+    // overlay shows under its banner; the panel reads the whole log.
+    const latest = said[said.length - 1];
+    annotation.progress = latest.charAt(0).toUpperCase() + latest.slice(1);
     setRun(annotation, { log: [...(annotation.run?.log ?? []), ...said].slice(-40) });
   };
   const out = { value: "" }, errs = { value: "" };
@@ -605,6 +609,7 @@ function runAgent(id, done, origin = `http://localhost:${PORT}`) {
   child.on("close", async (code) => {
     clearTimeout(timer);
     runs.delete(id);
+    delete annotation.progress;
     stdout = out.value; stderr = errs.value;
     const err = failedToStart || timedOut || stopped || code !== 0;
     let reply;
