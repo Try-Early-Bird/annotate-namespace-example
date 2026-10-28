@@ -17,10 +17,11 @@
  *   node stub-server.mjs [--port 4788]
  */
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { createLocalStore, sniffImage } from "./assets.mjs";
@@ -345,6 +346,12 @@ function agentPrompt(a) {
   if (a.routeName) lines.push(`  screen: ${a.routeName}`);
   const attached = attachedLines(a.references);
   if (attached.length) lines.push("", "ATTACHED (what they picked to go with the request):", ...attached);
+  // Where the app's assets live, whether or not one was attached: "use our
+  // logo" names no file, and the agent should not have to search for it.
+  const assetsAt = relative(AGENT_DIR, ASSETS.dir).split(sep).join("/");
+  if (existsSync(ASSETS.dir) && assetsAt && !assetsAt.startsWith("..")) {
+    lines.push("", `The app's own assets (images, fonts, media) are in ${assetsAt}/; use them by path.`);
+  }
   lines.push(
     "",
     "Edit the source to satisfy the request. Keep it minimal — change what was",
