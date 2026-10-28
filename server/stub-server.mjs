@@ -98,7 +98,7 @@ function detectAgents() {
     : CUSTOM ? `AGENT_CMD names "${CUSTOM.bins[0]}", which is not on PATH`
     : named && !PROVIDERS[named] ? `unknown agent "${named}" — expected ${PROVIDER_ORDER.join(", ")}`
     : named ? `${PROVIDERS[named].label} is not installed (\`${PROVIDERS[named].bins[0]}\` not on PATH)`
-    : `no supported agent found. Install one:\n` +
+    : `No agent is installed on the machine running this server.\n  Install one:\n` +
       `    Claude Code  npm i -g @anthropic-ai/claude-code   (then: claude)\n` +
       `    Codex        npm i -g @openai/codex               (then: codex)\n` +
       `    or Cursor, OpenCode, Gemini CLI or Grok\n` +
