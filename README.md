@@ -161,6 +161,13 @@ Everyone watching shares one connection to the Mac
 (`server/vnc-hub.mjs`), so a teammate, a second tab and full screen all see
 and drive the same session.
 
+A devbox's own agent, `vmguest`, asks macOS for the Local Network
+permission at some point after boot, and macOS puts the question ("Allow
+“vmguest” to find devices on local networks?") on the screen over the
+simulator. The sandbox answers it with **Allow** as soon as it appears, and
+answers no other prompt (`server/prompts.mjs`). Set `ANSWER_PROMPTS=0` to
+answer it yourself.
+
 If the screen will not embed, every macOS devbox also has Remote Display:
 your devbox → **Remote Display** in the dashboard, or `nsc vnc <instance-id>`
 (the id is in `nsc devbox list`).

@@ -59,6 +59,7 @@ import { fileURLToPath } from "node:url";
 import { createVncBridge, probeVnc } from "./vnc-bridge.mjs";
 import { createVncHub } from "./vnc-hub.mjs";
 import { simulatorScreenRect } from "./sim-window.mjs";
+import { watchPrompts } from "./prompts.mjs";
 import { listSimulators, appPath, moveApp, bootable } from "./simulators.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -171,6 +172,11 @@ for (const [port, what] of [
 const origin = publicUrl(PUBLIC_PORT);
 /** boxctl exists only on a devbox, which sits behind Namespace's auth gate. */
 const onDevbox = !spawnSync("boxctl", ["--help"], { stdio: "ignore", timeout: 10_000 }).error;
+
+// The devbox VM's own agent (vmguest) asks for the Local Network
+// permission, and macOS puts that question over the simulator. Answer it,
+// and only it (server/prompts.mjs). ANSWER_PROMPTS=0 leaves it to you.
+if (onDevbox && process.env.ANSWER_PROMPTS !== "0") watchPrompts();
 
 // The simulator is ON this machine, so it uses the loopback address: no auth
 // gate to pass, and no round trip out to the devbox URL and back.
