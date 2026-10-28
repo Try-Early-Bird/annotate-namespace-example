@@ -873,9 +873,11 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { status: "ok", protocolVersion: PROTOCOL_VERSION, queuesTasks: true });
   }
 
-  // Identity is optional: 404 leaves the overlay on its local name tiers,
-  // which is exactly what an example should demonstrate.
-  if (path === "/me") return json(res, 404, { error: "no server identity in the stub" });
+  // Identity is optional. `{"id": null}` is the protocol's "nobody": the
+  // overlay stays on its local name tiers (the name typed into it), which
+  // is what an example should demonstrate. A 404 meant the same, but cost
+  // a dev-log warning, and a yellow toast over the app, on every launch.
+  if (path === "/me") return json(res, 200, { id: null });
 
   // ── Sessions ──────────────────────────────────────────────────────────
   if (path === "/sessions" && req.method === "POST") {
