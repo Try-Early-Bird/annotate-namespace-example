@@ -15,7 +15,10 @@ export type Simulator = {
 
 export type Agent = {
   enabled: boolean;
+  id: string | null;
   name: string | null;
+  /** Its edits are auto-approved with shell access, not file tools only. */
+  shell: boolean | null;
   error: string | null;
   mode: "in-tree" | "worktree";
   dir: string | null;
@@ -128,6 +131,41 @@ export type Mark = {
 export async function getJson<T>(url: string, fallback: T): Promise<T> {
   const r = await fetch(url, { cache: "no-store" });
   return r.ok ? ((await r.json()) as T) : fallback;
+}
+
+/** The server's /agent (docs/protocol.md in the package, "Agent"). */
+export type AgentChoice = { id: string; label: string; installed: boolean; version?: string; shell?: boolean };
+export type AgentConfig = {
+  enabled: boolean;
+  current: { id: string; label: string; model: string | null; shell?: boolean } | null;
+  error: string | null;
+  working: number;
+  agents: AgentChoice[];
+};
+export type AgentModel = { id: string; label: string; description?: string; default?: boolean };
+export type AgentModels = { ok: true; models: AgentModel[] } | { ok: false; message: string };
+
+export async function getAgent(refresh = false): Promise<AgentConfig> {
+  const r = await fetch(`${API}/agent${refresh ? "?refresh=1" : ""}`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/** Slow: the server starts the agent's CLI to ask it. */
+export async function getAgentModels(agent: string): Promise<AgentModels> {
+  const r = await fetch(`${API}/agent/models?agent=${encodeURIComponent(agent)}`, { cache: "no-store" });
+  return r.json().catch(() => ({ ok: false, message: `HTTP ${r.status}` }));
+}
+
+export async function setAgent(change: { agent?: string; model?: string | null }): Promise<AgentConfig> {
+  const r = await fetch(`${API}/agent`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(change),
+  });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+  return body;
 }
 
 export async function switchDevice(udid: string) {

@@ -9,6 +9,7 @@ import { StatusDot, type Tone } from "@/components/status-dot";
 import type { ScreenState } from "@/components/phone";
 import type { Status } from "@/lib/api";
 import { agentState, backendState, buildState, screenState } from "@/lib/derive";
+import { AgentPicker } from "@/components/agent-picker";
 
 function Code({ children }: { children: ReactNode }) {
   return <code className="rounded-sm bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">{children}</code>;
@@ -102,14 +103,18 @@ function Details({ status, screen }: { status: Status; screen: ScreenState }) {
         </Row>
 
         <Row icon={<Bot />} tone={agent.tone} label="Agent"
-          value={!a?.enabled ? "Off" : a.error ? "Requested, not found" : a.name}>
+          value={!a?.enabled ? "Off" : a.error ? "Not found" : `${a.name}${a.model ? ` · ${a.model}` : ""}`}>
           {!a?.enabled && (
             <div>
-              Tasks are stored and nothing acts on them. Start with <Code>AGENT=1 npm run devbox</Code> to
-              hand them to Claude Code or Codex.
+              Turned off with <Code>AGENT=0</Code>: tasks are stored and nothing acts on them. Restart
+              without it to hand them to an agent.
             </div>
           )}
           {a?.enabled && a.error && <pre className="font-mono text-[11px] whitespace-pre-wrap">{a.error}</pre>}
+          {a?.enabled && <AgentPicker />}
+          {a?.enabled && a.shell && (
+            <div>Its edits are auto-approved, and that includes shell commands.</div>
+          )}
           {a?.enabled && !a.error && (
             <>
               <div>
