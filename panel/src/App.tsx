@@ -2,32 +2,17 @@ import { useState } from "react";
 import { Maximize, PenLine, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Connections } from "@/components/connections";
+import { AgentMenu, ConnectionsMenu } from "@/components/connections";
 import { DevicePicker } from "@/components/device-picker";
 import { Feedback } from "@/components/feedback";
 import { Phone, wake, type ScreenState } from "@/components/phone";
-import { StatusDot, type Tone } from "@/components/status-dot";
+import { StatusDot } from "@/components/status-dot";
 import { useDevices, useFeed, useStatus } from "@/hooks/use-sandbox";
 import { Person } from "@/components/feedback-parts";
 import type { Author } from "@/lib/api";
 import { buildFeed } from "@/lib/feed";
-import { agentState, backendState, buildState, screenState } from "@/lib/derive";
 import { Assets } from "@/components/assets";
 
-function Pill({ tone, label, value }: { tone: Tone; label: string; value: string }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="inline-flex items-center gap-1.5 text-xs">
-          <StatusDot tone={tone} />
-          <span className="text-muted-foreground">{label}</span>
-          <span className="font-medium">{value}</span>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent>{label}: {value}</TooltipContent>
-    </Tooltip>
-  );
-}
 
 export default function App() {
   const { status, error, refresh } = useStatus();
@@ -38,9 +23,6 @@ export default function App() {
 
   const src = status?.screen.src ?? null;
   const sim = status?.simulator ?? null;
-  const build = buildState(status), shown = screenState(status, screen);
-  const backend = error ? { tone: "bad" as const, label: "Unreachable" } : backendState(status);
-  const agent = agentState(status);
 
   // The header's summary line and the people in the conversation.
   const { open } = buildFeed(feed.tasks, feed.notes);
@@ -67,10 +49,8 @@ export default function App() {
             </div>
           </div>
           <nav className="ml-auto flex flex-wrap items-center gap-x-5 gap-y-2" aria-label="Status">
-            <Pill tone={build.tone} label="App" value={build.label} />
-            <Pill tone={shown.tone} label="Screen" value={shown.label} />
-            <Pill tone={backend.tone} label="Backend" value={backend.label} />
-            <Pill tone={agent.tone} label="Agent" value={agent.label} />
+            <ConnectionsMenu status={status} screen={screen} unreachable={error} />
+            <AgentMenu status={status} />
             {people.size > 0 && (
               <div className="flex -space-x-1.5" aria-label={`${people.size} people in team notes`}>
                 {[...people.values()].slice(0, 4).map((p) => (
@@ -133,10 +113,9 @@ export default function App() {
 
         {/* On a wide screen the column is exactly the window's height below
             the header, and Feedback takes whatever Connections leaves. */}
-        <aside className="flex flex-col gap-4 lg:sticky lg:top-20 lg:h-[calc(100dvh-112px)]">
+        <aside className="flex flex-col gap-4 rounded-2xl border p-3 lg:sticky lg:top-20 lg:h-[calc(100dvh-112px)]">
           <Feedback tasks={feed.tasks} notes={feed.notes} refresh={feed.refresh} agent={status?.agent ?? null} session={status?.protocol.session ?? "sandbox-session"} className="lg:min-h-[45%] lg:flex-1" />
           <Assets />
-          <Connections status={status} screen={screen} />
         </aside>
       </main>
     </div>

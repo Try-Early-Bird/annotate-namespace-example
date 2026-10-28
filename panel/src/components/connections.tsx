@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Bot, ChevronDown, Database, MonitorSmartphone, Server, Smartphone } from "lucide-react";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle,
 } from "@/components/ui/item";
@@ -35,62 +35,112 @@ function Row({
   );
 }
 
-/** Open or closed, per viewer. Storage can be missing or throw; then it is just closed. */
-const KEY = "panel.connections.open";
-function remembered() {
-  try { return localStorage.getItem(KEY) === "1"; } catch { return false; }
-}
-function remember(open: boolean) {
-  try { localStorage.setItem(KEY, open ? "1" : "0"); } catch { /* not kept */ }
+/** A header menu's button: a label, what it says now, and a chevron. */
+function MenuButton({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <PopoverTrigger asChild>
+      <button
+        type="button"
+        className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs hover:bg-muted data-[state=open]:bg-muted"
+        aria-label={label}
+      >
+        {children}
+        <ChevronDown className="size-3.5 text-muted-foreground" />
+      </button>
+    </PopoverTrigger>
+  );
 }
 
 /**
- * What the sandbox is connected to. Collapsed by default, so Feedback gets
- * the height; collapsed, the header still shows one dot per connection.
+ * CONNECTIONS, a header menu: one dot per thing the sandbox depends on —
+ * the app, the backend, storage, the simulator and the screen — and, open,
+ * the detail of each. It was a section at the foot of the sidebar, where
+ * it pushed Feedback up and was out of sight; in the header the dots are
+ * always visible and the detail is one click away.
  */
-export function Connections({ status, screen }: { status: Status | null; screen: ScreenState }) {
-  const [open, setOpen] = useState(remembered);
-  const toggle = (next: boolean) => { setOpen(next); remember(next); };
-
+export function ConnectionsMenu({
+  status, screen, unreachable = false,
+}: {
+  status: Status | null; screen: ScreenState;
+  /** The panel cannot reach the sandbox at all: everything else is stale. */
+  unreachable?: boolean;
+}) {
   const build = buildState(status), shown = screenState(status, screen);
-  const backend = backendState(status), agent = agentState(status);
-  const summary: [string, Tone][] = [
-    ["Backend", backend.tone], ["Agent", agent.tone], ["Storage", status?.storage ? "warn" : "off"],
+  const backend = unreachable ? { tone: "bad" as const, label: "Unreachable" } : backendState(status);
+  const dots: [string, Tone][] = [
+    ["App", build.tone], ["Backend", backend.tone], ["Storage", status?.storage ? "warn" : "off"],
     ["Simulator", status?.simulator ? build.tone : "warn"], ["Screen", shown.tone],
   ];
-
   return (
-    <Collapsible open={open} onOpenChange={toggle} asChild>
-      <section className="shrink-0 rounded-xl bg-muted/60">
-        <CollapsibleTrigger asChild>
-          <div
-            role="button"
-            aria-label={open ? "Collapse connections" : "Expand connections"}
-            className="flex cursor-pointer items-center gap-3 rounded-xl px-4 py-2.5 text-sm font-medium select-none hover:bg-muted"
-          >
-            Connections
-            {!open && (
-              <span className="flex items-center gap-1.5" aria-hidden>
-                {summary.map(([label, tone]) => <StatusDot key={label} tone={tone} />)}
-              </span>
+    <Popover>
+      <MenuButton label="Connections">
+        <span className="font-medium">{unreachable ? "Unreachable" : "Connections"}</span>
+        <span className="flex items-center gap-1" aria-hidden>
+          {dots.map(([label, tone]) => <StatusDot key={label} tone={tone} />)}
+        </span>
+      </MenuButton>
+      <PopoverContent>
+        {status ? <Details status={status} screen={screen} /> : (
+          <div className="space-y-4 p-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-10" />)}</div>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * AGENT, a header menu: which agent and whether it is working, and, open,
+ * the picker and how it runs. Its own menu rather than a row under
+ * Connections, because it is the one thing here people change.
+ */
+export function AgentMenu({ status }: { status: Status | null }) {
+  const agent = agentState(status);
+  const a = status?.agent;
+  return (
+    <Popover>
+      <MenuButton label="Agent">
+        <StatusDot tone={agent.tone} />
+        <span className="text-muted-foreground">Agent</span>
+        <span className="font-medium">{agent.label}</span>
+      </MenuButton>
+      <PopoverContent>
+        <ItemGroup className="gap-0! py-1">
+          <Row icon={<Bot />} tone={agent.tone} label="Agent"
+            value={!a?.enabled ? "Off" : a.error ? "Not found" : `${a.name}${a.model ? ` · ${a.model}` : ""}`}>
+            {!a?.enabled && (
+              <div>
+                Turned off with <Code>AGENT=0</Code>: tasks are stored and nothing acts on them. Restart
+                without it to hand them to an agent.
+              </div>
             )}
-            <ChevronDown className="ml-auto size-4 text-muted-foreground transition-transform in-data-[state=open]:rotate-180" />
-          </div>
-        </CollapsibleTrigger>
-        <CollapsibleContent className="max-h-[40dvh] overflow-y-auto">
-          {status ? <Details status={status} screen={screen} /> : (
-            <div className="space-y-4 p-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-10" />)}</div>
-          )}
-        </CollapsibleContent>
-      </section>
-    </Collapsible>
+            {a?.enabled && a.error && <pre className="font-mono text-[11px] whitespace-pre-wrap">{a.error}</pre>}
+            {a?.enabled && <AgentPicker />}
+            {a?.enabled && a.shell && (
+              <div>Its edits are auto-approved, and that includes shell commands.</div>
+            )}
+            {a?.enabled && !a.error && (
+              <>
+                <div>
+                  {a.mode === "worktree"
+                    ? `A branch per task, ${a.jobs} at a time${a.pullRequests ? ", opens pull requests" : ""}`
+                    : <>Edits <Code>{a.dir}</Code> directly, so the app hot reloads</>}
+                </div>
+                {a.tools && <div className="flex flex-wrap gap-1">Tools: {a.tools.map((t) => <Code key={t}>{t}</Code>)}</div>}
+                {a.sandbox && <div>Sandbox <Code>{a.sandbox}</Code></div>}
+                <div>{a.working} working · {a.queued} queued{a.model ? ` · ${a.model}` : ""}</div>
+              </>
+            )}
+          </Row>
+        </ItemGroup>
+      </PopoverContent>
+    </Popover>
   );
 }
 
 function Details({ status, screen }: { status: Status; screen: ScreenState }) {
-  const { protocol: p, agent: a, storage: st, simulator: sim } = status;
+  const { protocol: p, storage: st, simulator: sim } = status;
   const build = buildState(status), shown = screenState(status, screen);
-  const backend = backendState(status), agent = agentState(status);
+  const backend = backendState(status);
 
   return (
       <ItemGroup className="gap-0! py-1">
@@ -100,33 +150,6 @@ function Details({ status, screen }: { status: Status; screen: ScreenState }) {
             : "Not answering"}>
           <div>App posts to <Code>{p.endpoint}</Code></div>
           <div>Session <Code>{p.session}</Code></div>
-        </Row>
-
-        <Row icon={<Bot />} tone={agent.tone} label="Agent"
-          value={!a?.enabled ? "Off" : a.error ? "Not found" : `${a.name}${a.model ? ` · ${a.model}` : ""}`}>
-          {!a?.enabled && (
-            <div>
-              Turned off with <Code>AGENT=0</Code>: tasks are stored and nothing acts on them. Restart
-              without it to hand them to an agent.
-            </div>
-          )}
-          {a?.enabled && a.error && <pre className="font-mono text-[11px] whitespace-pre-wrap">{a.error}</pre>}
-          {a?.enabled && <AgentPicker />}
-          {a?.enabled && a.shell && (
-            <div>Its edits are auto-approved, and that includes shell commands.</div>
-          )}
-          {a?.enabled && !a.error && (
-            <>
-              <div>
-                {a.mode === "worktree"
-                  ? `A branch per task, ${a.jobs} at a time${a.pullRequests ? ", opens pull requests" : ""}`
-                  : <>Edits <Code>{a.dir}</Code> directly, so the app hot reloads</>}
-              </div>
-              {a.tools && <div className="flex flex-wrap gap-1">Tools: {a.tools.map((t) => <Code key={t}>{t}</Code>)}</div>}
-              {a.sandbox && <div>Sandbox <Code>{a.sandbox}</Code></div>}
-              <div>{a.working} working · {a.queued} queued{a.model ? ` · ${a.model}` : ""}</div>
-            </>
-          )}
         </Row>
 
         <Row icon={<Database />} tone={st ? "warn" : "bad"} label="Storage"
