@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
-import { Bot, ChevronDown, Database, MonitorSmartphone, Server, Smartphone } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ChevronDown, Database, MonitorSmartphone, RotateCw, Server, Smartphone } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle,
@@ -96,6 +97,13 @@ export function ConnectionsMenu({
 export function AgentMenu({ status }: { status: Status | null }) {
   const agent = agentState(status);
   const a = status?.agent;
+  const [refreshKey, setRefreshKey] = useState(0);
+  // The server's reason, as one sentence: the rest of its message is
+  // install instructions for a terminal, which the menu does not need.
+  const reason = a?.error?.split("\n")[0].trim().replace(/[\s:]+$/, "");
+  const line = !a?.enabled
+    ? "Turned off on the server"
+    : reason || (a.working > 0 ? `${a.name} is working` : `Connected to ${a.name}`);
   return (
     <Popover>
       <MenuButton label="Agent">
@@ -104,34 +112,38 @@ export function AgentMenu({ status }: { status: Status | null }) {
         <span className="font-medium">{agent.label}</span>
       </MenuButton>
       <PopoverContent>
-        <ItemGroup className="gap-0! py-1">
-          <Row icon={<Bot />} tone={agent.tone} label="Agent"
-            value={!a?.enabled ? "Off" : a.error ? "Not found" : `${a.name}${a.model ? ` · ${a.model}` : ""}`}>
-            {!a?.enabled && (
+        {/* The app's Agent page, in the panel: a header with refresh, the
+            status in one line, then the picker when there is a choice. */}
+        <div className="flex items-center justify-between px-4 pt-3 pb-1">
+          <span className="text-sm font-medium">Agent</span>
+          <Button variant="ghost" size="icon-sm" aria-label="Look for agents again"
+            onClick={() => setRefreshKey((n) => n + 1)}>
+            <RotateCw />
+          </Button>
+        </div>
+        <div className="space-y-3 px-4 pb-4 text-xs text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm text-foreground">
+            <StatusDot tone={agent.tone} />
+            {line}
+          </div>
+          {!a?.enabled && (
+            <div>Started with <Code>AGENT=0</Code>, so tasks are stored and nothing acts on them.</div>
+          )}
+          {a?.enabled && <AgentPicker refreshKey={refreshKey} />}
+          {a?.enabled && a.shell && <div>Its edits are auto-approved, and that includes shell commands.</div>}
+          {a?.enabled && !a.error && (
+            <div className="space-y-1">
               <div>
-                Turned off with <Code>AGENT=0</Code>: tasks are stored and nothing acts on them. Restart
-                without it to hand them to an agent.
+                {a.mode === "worktree"
+                  ? `A branch per task, ${a.jobs} at a time${a.pullRequests ? ", opens pull requests" : ""}`
+                  : <>Edits <Code>{a.dir}</Code> directly, so the app hot reloads</>}
               </div>
-            )}
-            {a?.enabled && a.error && <pre className="font-mono text-[11px] whitespace-pre-wrap">{a.error}</pre>}
-            {a?.enabled && <AgentPicker />}
-            {a?.enabled && a.shell && (
-              <div>Its edits are auto-approved, and that includes shell commands.</div>
-            )}
-            {a?.enabled && !a.error && (
-              <>
-                <div>
-                  {a.mode === "worktree"
-                    ? `A branch per task, ${a.jobs} at a time${a.pullRequests ? ", opens pull requests" : ""}`
-                    : <>Edits <Code>{a.dir}</Code> directly, so the app hot reloads</>}
-                </div>
-                {a.tools && <div className="flex flex-wrap gap-1">Tools: {a.tools.map((t) => <Code key={t}>{t}</Code>)}</div>}
-                {a.sandbox && <div>Sandbox <Code>{a.sandbox}</Code></div>}
-                <div>{a.working} working · {a.queued} queued{a.model ? ` · ${a.model}` : ""}</div>
-              </>
-            )}
-          </Row>
-        </ItemGroup>
+              {a.tools && <div className="flex flex-wrap gap-1">Tools: {a.tools.map((t) => <Code key={t}>{t}</Code>)}</div>}
+              {a.sandbox && <div>Sandbox <Code>{a.sandbox}</Code></div>}
+              <div>{a.working} working · {a.queued} queued</div>
+            </div>
+          )}
+        </div>
       </PopoverContent>
     </Popover>
   );

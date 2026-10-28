@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { RotateCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -16,7 +14,14 @@ const DEFAULT = "__default";
  * Agents that are not installed are listed, disabled. Models come from the
  * agent's own CLI, asked by the server, so loading them takes a moment.
  */
-export function AgentPicker({ onChanged }: { onChanged?: () => void }) {
+export function AgentPicker({
+  onChanged,
+  refreshKey = 0,
+}: {
+  onChanged?: () => void;
+  /** Bumped by the menu's refresh: look for agents again, and re-read the models. */
+  refreshKey?: number;
+}) {
   const [config, setConfig] = useState<AgentConfig | null>(null);
   const [models, setModels] = useState<AgentModels | null>(null);
   const [busy, setBusy] = useState(false);
@@ -25,7 +30,7 @@ export function AgentPicker({ onChanged }: { onChanged?: () => void }) {
   const load = useCallback((refresh = false) => {
     getAgent(refresh).then(setConfig).catch(() => setError("Could not read the agent."));
   }, []);
-  useEffect(() => load(), [load]);
+  useEffect(() => load(refreshKey > 0), [load, refreshKey]);
 
   const currentId = config?.current?.id ?? null;
   useEffect(() => {
@@ -34,7 +39,7 @@ export function AgentPicker({ onChanged }: { onChanged?: () => void }) {
     setModels(null);
     getAgentModels(currentId).then((m) => live && setModels(m));
     return () => { live = false; };
-  }, [currentId]);
+  }, [currentId, refreshKey]);
 
   async function change(body: { agent?: string; model?: string | null }) {
     setBusy(true);
@@ -50,7 +55,8 @@ export function AgentPicker({ onChanged }: { onChanged?: () => void }) {
   }
 
   if (!config) return error ? <span className="text-xs text-destructive">{error}</span> : <Spinner className="size-3" />;
-  if (!config.enabled) return null;
+  // Nothing to choose between: the status line above says so.
+  if (!config.enabled || !config.agents.some((a) => a.installed)) return null;
 
   return (
     <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -93,9 +99,6 @@ export function AgentPicker({ onChanged }: { onChanged?: () => void }) {
           </SelectContent>
         </Select>
       )}
-      <Button variant="ghost" size="sm" onClick={() => load(true)} disabled={busy} aria-label="Check for agents again">
-        <RotateCw /> Check again
-      </Button>
       {busy && <Spinner className="size-3" />}
       {models && !models.ok && <span className="text-xs text-muted-foreground">{models.message}</span>}
       {models?.ok && models.note && <span className="text-xs text-destructive">{models.note}</span>}
