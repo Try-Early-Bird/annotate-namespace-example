@@ -1,5 +1,5 @@
 /**
- * Annotate Protocol v1 — a stub server for the examples.
+ * AnnoKit Protocol v1 — a stub server for the examples.
  *
  * The overlay is a strict no-op until an endpoint and a session id resolve
  * AND `GET /health` answers with a matching `protocolVersion`. So an example
@@ -209,14 +209,14 @@ function repoRoot() {
 function makeWorktree(id) {
   const root = repoRoot();
   if (!root) return null;
-  const branch = `annotate/${id.slice(0, 12)}`;
+  const branch = `annokit/${id.slice(0, 12)}`;
   // The branch this task forks FROM. A pull request must target it, not the
   // repository's default branch: the worktree is cut from HEAD, so basing
   // the PR on `main` shows every commit between main and here — the whole
   // feature branch — with the one-line change buried in it. Observed: a
   // task that edited one file opened a PR touching dozens.
   const base = git(["rev-parse", "--abbrev-ref", "HEAD"], root) ?? "main";
-  const dir = join(tmpdir(), `annotate-wt-${id.slice(0, 12)}-${Date.now().toString(36)}`);
+  const dir = join(tmpdir(), `annokit-wt-${id.slice(0, 12)}-${Date.now().toString(36)}`);
   // -B so a re-run of the same task reuses its branch instead of failing.
   if (git(["worktree", "add", "--quiet", "-B", branch, dir, "HEAD"], root) === null) return null;
   const rel = relative(root, AGENT_DIR);
@@ -234,7 +234,7 @@ function commitWorktree(wt, annotation) {
   const staged = git(["diff", "--cached", "--name-only"], wt.dir);
   if (!staged) return null;
   const subject = (annotation.comment ?? "annotation").split("\n")[0].slice(0, 68);
-  git(["-c", "user.name=annotate-agent", "-c", "user.email=agent@example.invalid",
+  git(["-c", "user.name=annokit-agent", "-c", "user.email=agent@example.invalid",
        "commit", "--quiet", "-m", `${subject}\n\nFrom an in-app annotation (${annotation.id}).`], wt.dir);
   return {
     files: staged.split("\n").filter(Boolean),
@@ -513,7 +513,7 @@ const runs = new Map();
  * booted, there is simply no picture.
  */
 function simulatorShot() {
-  const file = join(tmpdir(), `annotate-shot-${randomUUID()}.png`);
+  const file = join(tmpdir(), `annokit-shot-${randomUUID()}.png`);
   return new Promise((done) => {
     execFile("xcrun", ["simctl", "io", "booted", "screenshot", "--type=png", file], { timeout: 15_000 },
       async (err) => {
@@ -1053,7 +1053,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host ?? `localhost:${PORT}`}`);
   const path = url.pathname.replace(/\/+$/, "") || "/";
   // The base for URLs handed back to the APP. Behind the sandbox's front
-  // door the app reaches this server under /__annotate, which the Host
+  // door the app reaches this server under /__annokit, which the Host
   // header does not carry: built from Host, screenshot links pointed at
   // Metro and never loaded in the app. PUBLIC_ORIGIN is that full base.
   const origin = process.env.PUBLIC_ORIGIN || `http://${req.headers.host ?? `localhost:${PORT}`}`;
@@ -1479,13 +1479,13 @@ const server = createServer(async (req, res) => {
 // HOST=127.0.0.1 keeps the stub off the network. The sandbox always sets
 // it: only its front door, on the same machine, talks to this server.
 server.listen(PORT, process.env.HOST || undefined, () => {
-  console.log(`\nAnnotate Protocol v1 stub — http://localhost:${PORT}`);
+  console.log(`\nAnnoKit Protocol v1 stub — http://localhost:${PORT}`);
   console.log(`  in memory; restart to clear`);
   const named = AGENT ? `${AGENT.label}${AGENT_MODEL ? ` · ${AGENT_MODEL}` : ""}` : "";
   const others = PROVIDER_ORDER.filter((id) => detected[id]?.installed && id !== AGENT?.id).map((id) => PROVIDERS[id].label);
   if (AGENT && WORKTREE) {
     console.log(`  agent: ${named} — worktree per task, ${MAX_JOBS} at a time${OPEN_PR ? ", opens PRs" : ""}`);
-    console.log(`         edits land on annotate/* branches, NOT in your tree (so no hot reload)`);
+    console.log(`         edits land on annokit/* branches, NOT in your tree (so no hot reload)`);
   } else if (AGENT) console.log(`  agent: ${named} — "Send to agent" edits ${AGENT_DIR}`);
   if (AGENT) {
     console.log(`         also installed: ${others.length ? others.join(", ") : "nothing else"} — switch in Settings → Agent\n`);
@@ -1512,6 +1512,6 @@ server.listen(PORT, process.env.HOST || undefined, () => {
   // `localhost` is the device reading this line, not the machine running
   // it — printing it there hands out an endpoint that cannot resolve, two
   // lines under the public URL that can.
-  console.log(`  EXPO_PUBLIC_ANNOTATE_ENDPOINT=${AGENT_ORIGIN}`);
-  console.log(`  EXPO_PUBLIC_ANNOTATE_SESSION_ID=example-session\n`);
+  console.log(`  EXPO_PUBLIC_ANNOKIT_ENDPOINT=${AGENT_ORIGIN}`);
+  console.log(`  EXPO_PUBLIC_ANNOKIT_SESSION_ID=example-session\n`);
 });

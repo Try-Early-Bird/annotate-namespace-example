@@ -6,7 +6,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Spinner } from "@/components/ui/spinner";
 import { assetPreview, deleteAsset, listAssets, uploadAsset, type Asset } from "@/lib/api";
 
-const KEY = "annotate-panel:assets-open";
+const KEY = "annokit-panel:assets-open";
 function remembered() {
   try { return localStorage.getItem(KEY) === "1"; } catch { return false; }
 }

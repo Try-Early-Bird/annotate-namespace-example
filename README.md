@@ -1,6 +1,6 @@
-# Annotate in a Namespace devbox
+# AnnoKit in a Namespace devbox
 
-An Expo app with [`@joinearlybird/annotate-react-native`](https://github.com/Try-Early-Bird/annotate-react-native)
+An Expo app with [`@joinearlybird/annokit`](https://github.com/joinearlybird/annokit)
 installed, set up so a [Namespace](https://namespace.so) devbox can build it,
 run it on the iOS Simulator, and serve the whole thing to your browser.
 
@@ -134,7 +134,7 @@ Everything goes through **one port, 8081**:
 | Path | What it serves |
 |---|---|
 | `/` | Metro, which serves the bundle to the app on the simulator |
-| `/__annotate/*` | the Annotate Protocol server |
+| `/__annokit/*` | the AnnoKit Protocol server |
 | `/view` | the panel |
 | `/websockify` | the simulator's screen, bridged from Screen Sharing (VNC) |
 
@@ -201,14 +201,14 @@ the point of the library.
 | `public/vnc.html` | the screen viewer: noVNC, cropped to the simulator |
 | `server/run-sandbox.mjs` | `npm run sandbox`: picks and boots a simulator, builds, and serves everything on port 8081 |
 | `server/devbox.sh` | `npm run devbox`: prepares a fresh devbox's screen, then runs the sandbox |
-| `server/stub-server.mjs` | the Annotate Protocol in one file, in memory, with the agent bridge |
+| `server/stub-server.mjs` | the AnnoKit Protocol in one file, in memory, with the agent bridge |
 
 The stub is for demos. It has no authorization, no tenancy and no retention,
 and restarting the sandbox clears it. See the protocol's
-[server obligations](https://github.com/Try-Early-Bird/annotate-react-native/blob/main/docs/protocol.md#server-obligations)
+[server obligations](https://github.com/joinearlybird/annokit/blob/main/docs/protocol.md#server-obligations)
 for what a real server must do.
 
-One expected warning: `[annotate] GET …/me — HTTP 404`. `/me` is optional
+One expected warning: `[annokit] GET …/me — HTTP 404`. `/me` is optional
 and this stub has no user accounts, so the app asks for a name the first
 time you post a team note.
 

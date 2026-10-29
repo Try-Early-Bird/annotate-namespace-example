@@ -1,14 +1,14 @@
 {
   "expo": {
-    "name": "Annotate Sandbox",
-    "slug": "annotate-namespace-example",
+    "name": "AnnoKit Sandbox",
+    "slug": "annokit-namespace-example",
     "version": "1.0.0",
-    "scheme": "annotate-sandbox",
+    "scheme": "annokit-sandbox",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-    "ios": { "supportsTablet": true, "bundleIdentifier": "com.example.annotatesandbox" },
-    "android": { "package": "com.example.annotatesandbox" },
+    "ios": { "supportsTablet": true, "bundleIdentifier": "com.example.annokitsandbox" },
+    "android": { "package": "com.example.annokitsandbox" },
     "web": { "bundler": "metro", "output": "single" },
     "plugins": ["expo-router"]
   }

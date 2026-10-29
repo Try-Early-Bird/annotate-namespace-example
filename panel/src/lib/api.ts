@@ -3,7 +3,7 @@
  * the panel is served at /view by the server it is asking.
  */
 
-export const API = "/__annotate";
+export const API = "/__annokit";
 
 export type Simulator = {
   udid: string;
@@ -241,7 +241,7 @@ export async function switchDevice(udid: string) {
 
 /**
  * Screenshot and diff URLs are built by the server from the host the APP
- * used (127.0.0.1, without the /__annotate prefix), which a browser cannot
+ * used (127.0.0.1, without the /__annokit prefix), which a browser cannot
  * reach. Keep the path and ask through the front door instead.
  */
 export function screenshotUrl(url: string) {

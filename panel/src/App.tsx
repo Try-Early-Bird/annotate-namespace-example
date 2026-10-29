@@ -44,7 +44,7 @@ export default function App() {
               <PenLine className="size-4" />
             </div>
             <div>
-              <h1 className="text-[15px] leading-tight font-semibold">Annotate sandbox</h1>
+              <h1 className="text-[15px] leading-tight font-semibold">AnnoKit sandbox</h1>
               <p className="text-xs text-muted-foreground">{summary}</p>
             </div>
           </div>
