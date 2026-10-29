@@ -1,7 +1,7 @@
 /**
  * THE ENTIRE INTEGRATION IS THIS FILE.
  *
- * Wrap the app root in <AnnotateProvider> and you are done — no navigation
+ * Wrap the app root in <AnnoKitProvider> and you are done — no navigation
  * changes, no instrumenting the components you want to annotate, no calls
  * anywhere else in the tree.
  *
@@ -16,15 +16,15 @@
  * children render untouched with zero overhead, so leaving this in place is
  * safe — the gate is absolute, not a flag you have to remember to flip.
  */
-import { AnnotateProvider } from "@joinearlybird/annotate-react-native";
+import { AnnoKitProvider } from "@joinearlybird/annokit";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 
 export default function RootLayout() {
   return (
-    <AnnotateProvider>
+    <AnnoKitProvider>
       <Stack screenOptions={{ headerShown: false }} />
       <StatusBar style="auto" />
-    </AnnotateProvider>
+    </AnnoKitProvider>
   );
 }

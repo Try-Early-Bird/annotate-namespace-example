@@ -158,7 +158,7 @@ function Details({ status, screen }: { status: Status; screen: ScreenState }) {
       <ItemGroup className="gap-0! py-1">
         <Row icon={<Server />} tone={backend.tone} label="Backend"
           value={p.ok
-            ? <>Annotate Protocol v{p.version} <span className="font-normal text-muted-foreground">· {p.ms} ms</span></>
+            ? <>AnnoKit Protocol v{p.version} <span className="font-normal text-muted-foreground">· {p.ms} ms</span></>
             : "Not answering"}>
           <div>App posts to <Code>{p.endpoint}</Code></div>
           <div>Session <Code>{p.session}</Code></div>

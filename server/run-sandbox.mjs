@@ -7,8 +7,8 @@
  * protocol server on 4788, both exposed. It does not work in a devbox, and
  * the way it fails is worth keeping written down:
  *
- *   [annotate] GET …-p4788.devbox.so /health — network error (TypeError)
- *   [annotate] health check failed — overlay disabled
+ *   [annokit] GET …-p4788.devbox.so /health — network error (TypeError)
+ *   [annokit] health check failed — overlay disabled
  *
  * Every devbox URL is authenticated — Namespace has `private` and
  * `workspace` access and nothing public. So `…-p4788` is BOTH a different
@@ -19,13 +19,13 @@
  *
  * So both live behind one public port:
  *
- *   :8081/__annotate/*  → the Annotate Protocol server
+ *   :8081/__annokit/*  → the AnnoKit Protocol server
  *   :8081/view          → the panel: what has been sent, read back
  *   :8081/*             → Metro, for the app on the simulator
  *
  * Same origin, so the session cookie is first-party, there is no preflight,
  * and only one port needs exposing. The client accepts an endpoint with a
- * path (capability URLs carry them), so `/__annotate` is a legal base.
+ * path (capability URLs carry them), so `/__annokit` is a legal base.
  *
  * A DEV CLIENT BUILD, ALWAYS — NEVER `expo start --web`.
  *
@@ -67,7 +67,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_PORT = Number(process.env.PORT) || 8081;
 const API_PORT = Number(process.env.API_PORT) || 4788;   // internal only
 const METRO_PORT = Number(process.env.METRO_PORT) || 8082; // internal only
-const PREFIX = "/__annotate";
+const PREFIX = "/__annokit";
 const VNC_PORT = Number(process.env.VNC_PORT) || 5900;
 const VNC_HOST = process.env.VNC_HOST || "127.0.0.1";
 /** Screen Sharing usually wants one; without it noVNC can only prompt. */
@@ -234,15 +234,15 @@ run("protocol server", process.execPath,
 // Expo AFTER the endpoint is known: EXPO_PUBLIC_* is inlined at bundle
 // time, so setting it later would change nothing.
 const appEnv = {
-  EXPO_PUBLIC_ANNOTATE_ENDPOINT: endpoint,
-  EXPO_PUBLIC_ANNOTATE_SESSION_ID: process.env.SESSION_ID ?? "sandbox-session",
+  EXPO_PUBLIC_ANNOKIT_ENDPOINT: endpoint,
+  EXPO_PUBLIC_ANNOKIT_SESSION_ID: process.env.SESSION_ID ?? "sandbox-session",
 };
 
 {
   // `run:ios` prebuilds ios/ if it is missing, compiles, installs on a booted
   // simulator and starts Metro itself — so there is no separate `expo start`.
   // The first build is slow (CocoaPods, then a full compile); later ones hit
-  // DerivedData. Nothing here is annotate-specific: it is an ordinary dev
+  // DerivedData. Nothing here is annokit-specific: it is an ordinary dev
   // build, which is the point.
   // THE FRONT DOOR IS THE APP'S BUNDLER, and that is why PORT must stay 8081.
   //
@@ -404,7 +404,7 @@ async function sandboxStatus() {
     protocol: {
       endpoint,
       path: PREFIX,
-      session: appEnv.EXPO_PUBLIC_ANNOTATE_SESSION_ID,
+      session: appEnv.EXPO_PUBLIC_ANNOKIT_SESSION_ID,
       ok: health.ok && health.body?.status === "ok",
       version: health.body?.protocolVersion ?? null,
       ms: health.ms,

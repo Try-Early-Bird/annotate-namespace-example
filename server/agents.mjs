@@ -453,7 +453,7 @@ function codexModels(bin) {
   return jsonSession(
     bin,
     ["app-server"],
-    (send) => send({ id: 1, method: "initialize", params: { clientInfo: { name: "annotate-sandbox", version: "1" } } }),
+    (send) => send({ id: 1, method: "initialize", params: { clientInfo: { name: "annokit-sandbox", version: "1" } } }),
     (e, send) => {
       if (e.id === 1) {
         send({ method: "initialized", params: {} });

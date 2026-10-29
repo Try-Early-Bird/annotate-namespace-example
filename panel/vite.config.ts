@@ -17,7 +17,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/sandbox": sandbox,
-      "/__annotate": sandbox,
+      "/__annokit": sandbox,
       "/screen-rect": sandbox,
       "/vnc": sandbox,
       "/websockify": { target: sandbox, ws: true },
